@@ -1,10 +1,3 @@
-(* Usage of AI: 
-    - Helping with syntax
-    - writing tests
-    - explaining
-*)
-
-
 (* X86lite Simulator *)
 
 (* See the documentation in the X86lite specification, available on the 
@@ -13,7 +6,6 @@
 *)
 
 open X86
-open Int64_overflow
 (* simulator machine state -------------------------------------------------- *)
 
 let mem_bot = 0x400000L          (* lowest valid address *)
@@ -150,7 +142,6 @@ let sbytes_of_data : data -> sbyte list = function
 let debug_simulator = ref false
 
 (* Interpret a condition code with respect to the given flags. *)
-(* type cnd = Eq | Neq | Gt | Ge | Lt | Le *)
 let interp_cnd {fo; fs; fz} : cnd -> bool = fun e ->
   match e with
   | Eq -> fz
@@ -168,7 +159,6 @@ let map_addr (addr:quad) : int option =
   else 
     None
 
-
 (* Simulates one step of the machine:
     - fetch the instruction at %rip
     - compute the source and/or destination information from the operands
@@ -176,56 +166,68 @@ let map_addr (addr:quad) : int option =
     - update the registers and/or memory appropriately
     - set the condition flags
 *)
-let step (m:mach) : unit =
-  let rip_ins = m.mem.(map_addr m.regs.(rind Rip)) in
-  begin match rip_ins with
-  | InsB0 ins -> match ins with
-                 | (Addq, _) | (Subq, _) | (Imulq, _) | (Orq, _) | (Xorq, _) | (Andq, _) -> arith_ins m ins
-  | InsFrag -> failwith "Unexpected instruction fragment"
-  | Byte c -> failwith "RIP points to Byte"
-
-
-let arith_ins (m:mach) (inst:ins) : mach =
-  let opcode, [src, dst] = inst  (* src, dst are Operands*)
-  begin match opcode with
-  | Addq -> 
-
-
-let set_flags (m:mach) (res:quad) (overflow:bool) : unit = 
-  m.flags.fz <- res = 0L;
-  m.flags.fs <- res < 0L;
-  m.flags.fo <- overflow;
-
-type addr = RegAddr of reg | MemAddr of Int64
-let op_to_value (m:mach) (op:operand) : int64 =
-  match op with
-  | Imm (Lit n) -> n 
-  | Reg r -> m.regs.(rind r)
-  | Ind1 (Lit n) -> match map_addr n with
-                    | Some i -> m.mem.(i)
-                    | None   -> failwith "Invalid Memory Address"
-
-  | Ind2 r -> let e = m.regs.(rind r) in
-                      match map_addr e with
-                      | Some i -> m.mem.(i)
-                      | None   -> failwith "Invalid Memory Address"
-
-  | Ind3 (Lit n, r) -> let e = m.regs.(rind r) in
-                       match map_addr (Int64.add e n) with
-                       | Some i -> m.mem.(i)
-                       | None   -> failwith "Invalid Memory Address"
-
-  | _ -> failwith "Cannot dereference operand"
-
-
+type addr = RegAddr of reg | MemAddr of quad
 
 let op_to_mem (m:mach) (op:operand) : addr =
   match op with
+  | Imm (Lit n) -> MemAddr n
   | Reg r -> RegAddr r
-  | Ind1 n -> MemAddr n
-  | Ind2 r -> RegAddr m.regs.(rind r)
+  | Ind1 (Lit n) -> MemAddr n
+  | Ind2 r -> MemAddr (m.regs.(rind r))
   | Ind3 (Lit n, r) -> MemAddr (Int64.add (m.regs.(rind r)) n)
-  | _ -> "Cannot dereference address"
+  | _ -> failwith "Cannot dereference address"
+
+let mem_to_val (m:mach) (a:addr) : quad = 
+  match a with
+  | RegAddr r -> m.regs.(rind r)
+  | MemAddr n -> int64_of_sbytes [m.mem.(Option.get (map_addr n))]
+
+let op_to_val (m:mach) (op:operand) : quad =
+  let addr = op_to_mem m op in
+  mem_to_val m addr
+
+
+let set_flags (m:mach) (res:quad) (overflow:bool) : unit = 
+  (m.flags.fz <- res = 0L;
+  m.flags.fs <- res < 0L;
+  m.flags.fo <- overflow;)
+
+let arith_ins (m:mach) (inst:ins) : unit =
+  let opcode, [src; dst] = inst  in (* src, dst are Operands*)
+  let res_addr = op_to_mem m src in
+  let a = op_to_val m src in
+  let b = op_to_val m dst in
+  let open Int64_overflow in
+  let res = (match opcode with 
+             | Addq -> add a b
+             | Subq -> sub b a 
+             | Imulq -> mul a b
+             | Orq -> ok (Int64.logor a b)
+             | Xorq -> ok (Int64.logxor a b)
+             | Andq -> ok (Int64.logand a b)) in 
+  let res_sbyte = sbytes_of_int64 res.value in 
+  (
+  begin match res_addr with
+  | RegAddr r -> m.regs.(rind r) <- res.value
+  | MemAddr add -> 
+      let start_idx = Option.get (map_addr add) in
+      List.iteri (fun i sbyte -> m.mem.(start_idx + i) <- sbyte) res_sbyte
+  end;
+  set_flags m res.value res.overflow
+  )
+  
+
+
+
+let step (m:mach) : unit = 
+  let rip_ins = m.mem.(Option.get (map_addr m.regs.(rind Rip))) in
+    match rip_ins with
+    | InsB0 (opcode, operands) -> (match opcode with
+                  | Addq| Subq| Imulq | Orq | Xorq | Andq ->  arith_ins m (opcode, operands)
+                  | _ -> failwith "Not implementend yet TODO")
+    | InsFrag -> failwith "Unexpected instruction fragment"
+    | Byte c -> failwith "RIP points to Byte"
+    | _ -> failwith "Hell is burning brother wtf u doing?"
 
 (* Runs the machine until the rip register reaches a designated
    memory address. Returns the contents of %rax when the 
