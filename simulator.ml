@@ -4,7 +4,6 @@
    course web pages, for a detailed explanation of the instruction
    semantics.
 *)
-
 open X86
 (* simulator machine state -------------------------------------------------- *)
 
@@ -159,6 +158,11 @@ let map_addr (addr:quad) : int option =
   else 
     None
 
+let get_addr (addr:quad) : int =
+  match map_addr addr with
+  | Some i -> i
+  | None -> raise X86lite_segfault
+
 (* Simulates one step of the machine:
     - fetch the instruction at %rip
     - compute the source and/or destination information from the operands
@@ -180,11 +184,15 @@ let op_to_mem (m:mach) (op:operand) : addr =
 let mem_to_val (m:mach) (a:addr) : quad = 
   match a with
   | RegAddr r -> m.regs.(rind r)
-  | MemAddr n -> int64_of_sbytes [m.mem.(Option.get (map_addr n))]
+  | MemAddr n -> let start_idx = get_addr n in
+                  if start_idx + 7 >= mem_size then raise X86lite_segfault;
+                  let sbytes_to_read = List.init 8 (fun i -> m.mem.(start_idx + i)) in
+                  int64_of_sbytes sbytes_to_read
 
 let op_to_val (m:mach) (op:operand) : quad =
-  let addr = op_to_mem m op in
-  mem_to_val m addr
+  match op with
+  | Imm (Lit n) -> n
+  | _ -> let addr = op_to_mem m op in mem_to_val m addr
 
 
 let set_flags (m:mach) (res:quad) (overflow:bool) : unit = 
@@ -194,13 +202,13 @@ let set_flags (m:mach) (res:quad) (overflow:bool) : unit =
 
 let arith_ins (m:mach) (inst:ins) : unit =
   let opcode, [src; dst] = inst  in (* src, dst are Operands*)
-  let res_addr = op_to_mem m src in
+  let res_addr = op_to_mem m dst in  (* Store result in DESTINATION *)
   let a = op_to_val m src in
   let b = op_to_val m dst in
   let open Int64_overflow in
   let res = (match opcode with 
              | Addq -> add a b
-             | Subq -> sub b a 
+             | Subq -> sub b a
              | Imulq -> mul a b
              | Orq -> ok (Int64.logor a b)
              | Xorq -> ok (Int64.logxor a b)
@@ -210,24 +218,70 @@ let arith_ins (m:mach) (inst:ins) : unit =
   begin match res_addr with
   | RegAddr r -> m.regs.(rind r) <- res.value
   | MemAddr add -> 
-      let start_idx = Option.get (map_addr add) in
+      let start_idx = get_addr add in
       List.iteri (fun i sbyte -> m.mem.(start_idx + i) <- sbyte) res_sbyte
   end;
-  set_flags m res.value res.overflow
+  set_flags m res.value res.overflow;
+  m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size);
   )
+let arith_one_ins (m:mach) (inst:ins) : unit = failwith ("TODO arith")
+
+let data_ins (m:mach) (inst:ins) : unit =failwith ("TODO data ")
+let leaq_ins (m:mach) (inst:ins) : unit =failwith ("TODO leaq ")
+let shift_ins (m:mach) (inst:ins) : unit =failwith ("TODO shift ")
+let jmp_ins (m:mach) (inst:ins) : unit =failwith ("TODO jmp ")
+let cmp_ins (m:mach) (inst:ins) : unit =failwith ("TODO cmp ")
+let fun_ins (m:mach) (inst:ins) : unit =failwith ("TODO fun ")
+
   
+let string_of_cnd = function
+  | Eq -> "Eq" | Neq -> "Neq" | Lt -> "Lt" | Le -> "Le" | Gt -> "Gt" | Ge -> "Ge"
+
+let string_of_opcode = function
+  | Movq -> "Movq"
+  | Pushq -> "Pushq"
+  | Popq -> "Popq"
+  | Leaq -> "Leaq"
+  | Incq -> "Incq"
+  | Decq -> "Decq"
+  | Negq -> "Negq"
+  | Notq -> "Notq"
+  | Addq -> "Addq"
+  | Subq -> "Subq"
+  | Imulq -> "Imulq"
+  | Xorq -> "Xorq"
+  | Orq -> "Orq"
+  | Andq -> "Andq"
+  | Shlq -> "Shlq"
+  | Sarq -> "Sarq"
+  | Shrq -> "Shrq"
+  | Jmp -> "Jmp"
+  | J c -> "J(" ^ string_of_cnd c ^ ")"
+  | Cmpq -> "Cmpq"
+  | Set c -> "Set(" ^ string_of_cnd c ^ ")"
+  | Callq -> "Callq"
+  | Retq -> "Retq"
 
 
 
 let step (m:mach) : unit = 
-  let rip_ins = m.mem.(Option.get (map_addr m.regs.(rind Rip))) in
-    match rip_ins with
+  let rip_ins = m.mem.(get_addr m.regs.(rind Rip)) in
+    (begin match rip_ins with
     | InsB0 (opcode, operands) -> (match opcode with
-                  | Addq| Subq| Imulq | Orq | Xorq | Andq ->  arith_ins m (opcode, operands)
-                  | _ -> failwith "Not implementend yet TODO")
+                                   | Addq | Subq | Imulq | Orq | Xorq | Andq ->  (arith_ins m (opcode, operands))
+                                   | Incq | Decq | Negq | Notq -> arith_one_ins m (opcode, operands)
+                                   | Movq | Pushq | Popq -> data_ins m (opcode, operands) 
+                                   | Leaq -> leaq_ins m (opcode, operands)
+                                   | Shlq | Sarq | Shrq -> shift_ins m (opcode, operands)
+                                   | Jmp -> jmp_ins m (opcode, operands)
+                                   | J n -> jmp_ins m (opcode, operands)
+                                   | Cmpq -> cmp_ins m (opcode, operands)
+                                   | Set n -> cmp_ins m (opcode, operands)
+                                   | Callq | Retq -> fun_ins m (opcode, operands) )
     | InsFrag -> failwith "Unexpected instruction fragment"
-    | Byte c -> failwith "RIP points to Byte"
-    | _ -> failwith "Hell is burning brother wtf u doing?"
+    | Byte c -> failwith "RIP points to Byte" end)
+
+    
 
 (* Runs the machine until the rip register reaches a designated
    memory address. Returns the contents of %rax when the 
