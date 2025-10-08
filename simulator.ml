@@ -5,6 +5,7 @@
    semantics.
 *)
 open X86
+
 (* simulator machine state -------------------------------------------------- *)
 
 let mem_bot = 0x400000L          (* lowest valid address *)
@@ -170,8 +171,17 @@ let get_addr (addr:quad) : int =
     - update the registers and/or memory appropriately
     - set the condition flags
 *)
+open Int64_overflow
+
 type addr = RegAddr of reg | MemAddr of quad
 
+let write_res (m:mach) (res:int64) (res_addr:addr) : unit =
+  let res_sbyte = sbytes_of_int64 res in 
+  match res_addr with
+  | RegAddr r -> m.regs.(rind r) <- res
+  | MemAddr add -> 
+      let start_idx = get_addr add in
+      List.iteri (fun i sbyte -> m.mem.(start_idx + i) <- sbyte) res_sbyte
 let op_to_mem (m:mach) (op:operand) : addr =
   match op with
   | Imm (Lit n) -> MemAddr n
@@ -205,7 +215,6 @@ let arith_ins (m:mach) (inst:ins) : unit =
   let res_addr = op_to_mem m dst in  (* Store result in DESTINATION *)
   let a = op_to_val m src in
   let b = op_to_val m dst in
-  let open Int64_overflow in
   let res = (match opcode with 
              | Addq -> add a b
              | Subq -> sub b a
@@ -213,21 +222,52 @@ let arith_ins (m:mach) (inst:ins) : unit =
              | Orq -> ok (Int64.logor a b)
              | Xorq -> ok (Int64.logxor a b)
              | Andq -> ok (Int64.logand a b)) in 
-  let res_sbyte = sbytes_of_int64 res.value in 
-  (
-  begin match res_addr with
-  | RegAddr r -> m.regs.(rind r) <- res.value
-  | MemAddr add -> 
-      let start_idx = get_addr add in
-      List.iteri (fun i sbyte -> m.mem.(start_idx + i) <- sbyte) res_sbyte
-  end;
+  write_res m res.value res_addr;
   set_flags m res.value res.overflow;
-  m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size);
-  )
-let arith_one_ins (m:mach) (inst:ins) : unit = failwith ("TODO arith")
+  m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
+let arith_one_ins (m:mach) (inst:ins) : unit = 
+  let opcode, [dst] = inst in
+  let res_addr = op_to_mem m dst in
+  let a = op_to_val m dst in
+  let res = (match opcode with
+             | Incq -> add a 1L
+             | Decq -> sub a 1L
+             | Negq -> mul a (-1L)
+             | Notq -> ok (Int64.lognot a)) in
+  write_res m res.value res_addr;
+  set_flags m res.value res.overflow;
+  m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
+let data_ins (m:mach) (inst:ins) : unit = 
+  let opcode, operands = inst in
+   (match opcode with
+   | Movq -> let [src; dst] = operands in 
+             let dst_addr = op_to_mem m dst in
+             let src_val = op_to_val m src in
+             write_res m src_val dst_addr
+   | Pushq -> let [src] = operands in 
+              let src_val = op_to_val m src in 
+              let rsp_old = m.regs.(rind Rsp) in
+              let rsp_new = Int64.sub rsp_old ins_size in
+              m.regs.(rind Rsp) <- rsp_new;
+              write_res m src_val (MemAddr rsp_new)
+   | Popq -> let [dst] = operands in
+             let rsp = m.regs.(rind Rsp) in
+             let start_idx = get_addr rsp in
+             let dst_addr = op_to_mem m dst in
+             if start_idx + 7 >= Int64.to_int mem_top then raise X86lite_segfault;
+             let bytes_to_read = List.init 8 (fun i -> m.mem.(start_idx + i)) in
+             let value = int64_of_sbytes bytes_to_read in
+             write_res m value dst_addr;
+             m.regs.(rind Rsp) <- Int64.add rsp ins_size);
 
-let data_ins (m:mach) (inst:ins) : unit =failwith ("TODO data ")
-let leaq_ins (m:mach) (inst:ins) : unit =failwith ("TODO leaq ")
+  m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
+let leaq_ins (m:mach) (inst:ins) : unit =
+  let opcode, [ind; dst] = inst in 
+  let lea_addr = op_to_mem m ind in 
+  let dst_addr = op_to_mem m dst in
+  (match lea_addr with
+  | MemAddr mem -> write_res m mem dst_addr
+  | RegAddr r -> failwith "Lea without ind operator")
 let shift_ins (m:mach) (inst:ins) : unit =failwith ("TODO shift ")
 let jmp_ins (m:mach) (inst:ins) : unit =failwith ("TODO jmp ")
 let cmp_ins (m:mach) (inst:ins) : unit =failwith ("TODO cmp ")
