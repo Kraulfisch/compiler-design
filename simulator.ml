@@ -281,44 +281,57 @@ let shift_ins (m:mach) (inst:ins) : unit =
   write_res m res dst_addr;
   set_flags m res ov;
   m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
-let jmp_ins (m:mach) (inst:ins) : unit =
+let jmp_ins (m:mach) (inst:ins) (cond:cnd option): unit =
   let opcode, [src] = inst in
   let src_addr = op_to_mem m src in
-  (match src_addr with
-  | MemAddr mem -> m.regs.(rind Rip) <- mem
-  | RegAddr r -> failwith "Cant jump to register");
+  (match cond with
+  | None -> (match src_addr with
+            | MemAddr mem -> m.regs.(rind Rip) <- mem
+            | RegAddr r -> failwith "Cant jump to register")
+  | Some e -> if interp_cnd m.flags e then
+              (match src_addr with
+              | MemAddr mem -> m.regs.(rind Rip) <- mem
+              | RegAddr r -> failwith "Cant jump to register")
+             else
+              m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
+  )
+let cmp_ins (m:mach) (inst:ins) : unit =
+  let opcode, [src1; src2] = inst in
+  let a = op_to_val m src1 in
+  let b = op_to_val m src2 in
+  let res = sub b a in
+  set_flags m res.value res.overflow;
   m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
-let cmp_ins (m:mach) (inst:ins) : unit =failwith ("TODO cmp ")
-let fun_ins (m:mach) (inst:ins) : unit =failwith ("TODO fun ")
+let setb_ins (m:mach) (inst:ins) (n:cnd) : unit =
+  let opcode, [dst] = inst in
+  let dst_addr = op_to_mem m dst in
+  let cnd = interp_cnd m.flags n in
+  let value = if cnd then 1L else 0L in
+  (match dst_addr with
+  | RegAddr r-> failwith "TODO change lowest bit register"
+  | MemAddr mem -> let idx = get_addr mem in
+                   failwith "TODO change lowest Memory byte with sbyte")
+let fun_ins (m:mach) (inst:ins) : unit = 
+  let opcode, operands = inst in
+  (match opcode with 
+  | Retq ->  let rsp = m.regs.(rind Rsp) in
+             let start_idx = get_addr rsp in
+             let dst_addr = RegAddr Rip in
+             if start_idx + 7 >= Int64.to_int mem_top then raise X86lite_segfault;
+             let bytes_to_read = List.init 8 (fun i -> m.mem.(start_idx + i)) in
+             let value = int64_of_sbytes bytes_to_read in
+             write_res m value dst_addr;
+             m.regs.(rind Rsp) <- Int64.add rsp ins_size
+  | Callq ->  let [src] = operands in
+              let rip_val = mem_to_val m (RegAddr Rip) in 
+              let rsp_old = m.regs.(rind Rsp) in
+              let rsp_new = Int64.sub rsp_old ins_size in
+              let src_val = op_to_val m src in
+              m.regs.(rind Rsp) <- rsp_new;
+              write_res m rip_val (MemAddr rsp_new);
+              write_res m src_val (RegAddr Rip)
+  )  
 
-  
-let string_of_cnd = function
-  | Eq -> "Eq" | Neq -> "Neq" | Lt -> "Lt" | Le -> "Le" | Gt -> "Gt" | Ge -> "Ge"
-
-let string_of_opcode = function
-  | Movq -> "Movq"
-  | Pushq -> "Pushq"
-  | Popq -> "Popq"
-  | Leaq -> "Leaq"
-  | Incq -> "Incq"
-  | Decq -> "Decq"
-  | Negq -> "Negq"
-  | Notq -> "Notq"
-  | Addq -> "Addq"
-  | Subq -> "Subq"
-  | Imulq -> "Imulq"
-  | Xorq -> "Xorq"
-  | Orq -> "Orq"
-  | Andq -> "Andq"
-  | Shlq -> "Shlq"
-  | Sarq -> "Sarq"
-  | Shrq -> "Shrq"
-  | Jmp -> "Jmp"
-  | J c -> "J(" ^ string_of_cnd c ^ ")"
-  | Cmpq -> "Cmpq"
-  | Set c -> "Set(" ^ string_of_cnd c ^ ")"
-  | Callq -> "Callq"
-  | Retq -> "Retq"
 
 
 
@@ -331,10 +344,10 @@ let step (m:mach) : unit =
                                    | Movq | Pushq | Popq -> data_ins m (opcode, operands) 
                                    | Leaq -> leaq_ins m (opcode, operands)
                                    | Shlq | Sarq | Shrq -> shift_ins m (opcode, operands)
-                                   | Jmp -> jmp_ins m (opcode, operands)
-                                   | J n -> jmp_ins m (opcode, operands)
+                                   | Jmp -> jmp_ins m (opcode, operands) None
+                                   | J n -> jmp_ins m (opcode, operands) (Some n)
                                    | Cmpq -> cmp_ins m (opcode, operands)
-                                   | Set n -> cmp_ins m (opcode, operands)
+                                   | Set n -> setb_ins m (opcode, operands) n
                                    | Callq | Retq -> fun_ins m (opcode, operands) )
     | InsFrag -> failwith "Unexpected instruction fragment"
     | Byte c -> failwith "RIP points to Byte" end)
