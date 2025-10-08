@@ -268,8 +268,26 @@ let leaq_ins (m:mach) (inst:ins) : unit =
   (match lea_addr with
   | MemAddr mem -> write_res m mem dst_addr
   | RegAddr r -> failwith "Lea without ind operator")
-let shift_ins (m:mach) (inst:ins) : unit =failwith ("TODO shift ")
-let jmp_ins (m:mach) (inst:ins) : unit =failwith ("TODO jmp ")
+let shift_ins (m:mach) (inst:ins) : unit =
+  let opcode, [amt; dst] = inst in
+  let amount = Int64.to_int(op_to_val m amt)in
+  let dst_addr = op_to_mem m dst in
+  let dst_val = op_to_val m dst in
+  let ov = if amount = 0 then false else m.flags.fo in
+  let res = (match opcode with
+             | Sarq -> Int64.shift_right dst_val amount
+             | Shlq -> Int64.shift_left dst_val amount
+             | Shrq -> Int64.shift_right_logical dst_val amount) in
+  write_res m res dst_addr;
+  set_flags m res ov;
+  m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
+let jmp_ins (m:mach) (inst:ins) : unit =
+  let opcode, [src] = inst in
+  let src_addr = op_to_mem m src in
+  (match src_addr with
+  | MemAddr mem -> m.regs.(rind Rip) <- mem
+  | RegAddr r -> failwith "Cant jump to register");
+  m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
 let cmp_ins (m:mach) (inst:ins) : unit =failwith ("TODO cmp ")
 let fun_ins (m:mach) (inst:ins) : unit =failwith ("TODO fun ")
 
