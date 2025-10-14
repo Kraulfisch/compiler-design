@@ -180,6 +180,7 @@ let write_res (m:mach) (res:int64) (res_addr:addr) : unit =
   match res_addr with
   | RegAddr r -> m.regs.(rind r) <- res
   | MemAddr add -> 
+(* TODO Check mem out of bounds*)
       let start_idx = get_addr add in
       List.iteri (fun i sbyte -> m.mem.(start_idx + i) <- sbyte) res_sbyte
 let op_to_mem (m:mach) (op:operand) : addr =
@@ -308,9 +309,15 @@ let setb_ins (m:mach) (inst:ins) (n:cnd) : unit =
   let cnd = interp_cnd m.flags n in
   let value = if cnd then 1L else 0L in
   (match dst_addr with
-  | RegAddr r-> failwith "TODO change lowest bit register"
+  | RegAddr r-> let curr_val = m.regs.(rind r) in
+                let masked = Int64.logand curr_val 0xFFFFFFFFFFFFFF00L in
+                let new_val = Int64.logor masked 0x00000000000000FFL in
+                m.regs.(rind r) <- new_val
+
   | MemAddr mem -> let idx = get_addr mem in
-                   failwith "TODO change lowest Memory byte with sbyte")
+                   m.mem.(idx) <- Byte (Char.chr (Int64.to_int value)));
+  m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
+
 let fun_ins (m:mach) (inst:ins) : unit = 
   let opcode, operands = inst in
   (match opcode with 
@@ -385,7 +392,7 @@ exception Redefined_sym of lbl
 
    - resolve the labels to concrete addresses and 'patch' the instructions to 
      replace Lbl values with the corresponding Imm values.
-
+  
    - the text segment starts at the lowest address
    - the data segment starts after the text segment
 
