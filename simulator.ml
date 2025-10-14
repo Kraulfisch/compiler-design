@@ -180,7 +180,6 @@ let write_res (m:mach) (res:int64) (res_addr:addr) : unit =
   match res_addr with
   | RegAddr r -> m.regs.(rind r) <- res
   | MemAddr add -> 
-(* TODO Check mem out of bounds*)
       let start_idx = get_addr add in
       List.iteri (fun i sbyte -> m.mem.(start_idx + i) <- sbyte) res_sbyte
 let op_to_mem (m:mach) (op:operand) : addr =
@@ -269,6 +268,38 @@ let leaq_ins (m:mach) (inst:ins) : unit =
   (match lea_addr with
   | MemAddr mem -> write_res m mem dst_addr
   | RegAddr r -> failwith "Lea without ind operator")
+
+
+let set_flags_sarq (m:mach) (res:quad) (amt: int) =
+  if amt <> 0 then begin
+    m.flags.fs <- res < 0L;
+    m.flags.fz <- res = 0L;
+    (* Leave overflow unchanged *)
+    if amt = 1 then m.flags.fo <- false
+  end
+
+let set_flags_shlq (m:mach) (res:quad) (orig_val:quad) (amt: int) =
+  if amt <> 0 then begin
+    m.flags.fs <- res < 0L;
+    m.flags.fz <- res = 0L;
+    (* Leave overflow unchanged unless amt = 1*)
+    if amt = 1 then begin
+      let msb = Int64.to_int (Int64.logand (Int64.shift_right_logical orig_val 63) 1L) in
+      let msb2 = Int64.to_int (Int64.logand (Int64.shift_right_logical orig_val 62) 1L) in
+      m.flags.fo <- msb <> msb2
+    end
+  end
+
+let set_flags_shrq (m:mach) (res:quad) (orig_val) (amt: int) =
+  if amt <> 0 then begin
+    m.flags.fs <- (Int64.logand (Int64.shift_right res 63) 1L) = 1L;
+    m.flags.fz <- res = 0L;
+    (* Leave overflow unchanged unless amt = 1*)
+    if amt = 1 then m.flags.fo <- (Int64.logand (Int64.shift_right orig_val 63) 1L) = 1L
+  end
+
+
+
 let shift_ins (m:mach) (inst:ins) : unit =
   let opcode, [amt; dst] = inst in
   let amount = Int64.to_int(op_to_val m amt)in
@@ -276,12 +307,13 @@ let shift_ins (m:mach) (inst:ins) : unit =
   let dst_val = op_to_val m dst in
   let ov = if amount = 0 then false else m.flags.fo in
   let res = (match opcode with
-             | Sarq -> Int64.shift_right dst_val amount
-             | Shlq -> Int64.shift_left dst_val amount
-             | Shrq -> Int64.shift_right_logical dst_val amount) in
+             | Sarq -> let res' = Int64.shift_right dst_val amount in (set_flags_sarq m res' amount); res'
+             | Shlq -> let res' = Int64.shift_left dst_val amount in (set_flags_shlq m res' dst_val amount);res'
+             | Shrq -> let res' = Int64.shift_right_logical dst_val amount in (set_flags_shrq m res' dst_val amount);res'
+             ) in
   write_res m res dst_addr;
-  set_flags m res ov;
   m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
+
 let jmp_ins (m:mach) (inst:ins) (cond:cnd option): unit =
   let opcode, [src] = inst in
   let src_addr = op_to_mem m src in
@@ -296,28 +328,31 @@ let jmp_ins (m:mach) (inst:ins) (cond:cnd option): unit =
              else
               m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
   )
-let cmp_ins (m:mach) (inst:ins) : unit =
-  let opcode, [src1; src2] = inst in
+
+ let cmp_ins (m:mach) (inst:ins) : unit =
+ let opcode, [src1; src2] = inst in
   let a = op_to_val m src1 in
   let b = op_to_val m src2 in
   let res = sub b a in
   set_flags m res.value res.overflow;
   m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
+             
 let setb_ins (m:mach) (inst:ins) (n:cnd) : unit =
-  let opcode, [dst] = inst in
+ let opcode, [dst] = inst in
   let dst_addr = op_to_mem m dst in
   let cnd = interp_cnd m.flags n in
-  let value = if cnd then 1L else 0L in
+  let value: int64 = if cnd then 1L else 0L in
   (match dst_addr with
-  | RegAddr r-> let curr_val = m.regs.(rind r) in
-                let masked = Int64.logand curr_val 0xFFFFFFFFFFFFFF00L in
-                let new_val = Int64.logor masked 0x00000000000000FFL in
-                m.regs.(rind r) <- new_val
+  | RegAddr r   -> let reg_to_change = m.regs.(rind r) in
+                   (* Set lowest byte:  *)
+                   let masked: int64 = Int64.logxor reg_to_change reg_to_change in
+                   m.regs.(rind r) <- Int64.logor masked value
 
   | MemAddr mem -> let idx = get_addr mem in
-                   m.mem.(idx) <- Byte (Char.chr (Int64.to_int value)));
-  m.regs.(rind Rip) <- Int64.add (m.regs.(rind Rip)) (ins_size)
-
+                   m.mem.(idx) <- Byte (Char.chr (Int64.to_int value))
+  );
+  m.regs.(rind Rip) <- Int64.add m.regs.(rind Rip) ins_size
+  
 let fun_ins (m:mach) (inst:ins) : unit = 
   let opcode, operands = inst in
   (match opcode with 
@@ -392,7 +427,7 @@ exception Redefined_sym of lbl
 
    - resolve the labels to concrete addresses and 'patch' the instructions to 
      replace Lbl values with the corresponding Imm values.
-  
+
    - the text segment starts at the lowest address
    - the data segment starts after the text segment
 
