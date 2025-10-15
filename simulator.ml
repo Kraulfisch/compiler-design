@@ -1,5 +1,6 @@
 (* X86lite Simulator *)
 
+(* Usage of AI: We used GenAI Systems to explain methods, clarify tasks, help with syntax and correct own methods.*)
 (* See the documentation in the X86lite specification, available on the 
    course web pages, for a detailed explanation of the instruction
    semantics.
@@ -427,166 +428,128 @@ exception Undefined_sym of lbl
 (* Assemble should raise this when a label is defined more than once *)
 exception Redefined_sym of lbl
 
-(* Mapping Strings to values *)
-module StringMap = Map.Make(String) 
-
-
-let length_of_asm (e:asm): quad =
-  match e with
-  | Text ls -> Int64.of_int (List.length ls)
-  | Data ls -> Int64.of_int (List.length ls)
-
-(* alternatively: (str * quad ) list instead of map. But I like map *)
-let build_symbol_table (p:prog): quad StringMap.t = 
-  (* iterate over all data segments and find label declarations -> map (count correctly) absolute address*)
-  let map: quad StringMap.t = StringMap.empty in
-  let rec recursive_builder (p: elem list) (acc: quad StringMap.t) (addr:quad): quad StringMap.t = 
-    match p with
-    | [] -> acc
-    | e::xs -> (match (StringMap.find_opt e.lbl acc) with
-               | Some _  -> raise (Redefined_sym e.lbl)
-               | None -> (* New label found *)
-                          let numOfInstrInElem = length_of_asm e.asm in
-                          let new_acc = acc |> StringMap.add e.lbl addr in
-                          recursive_builder xs new_acc (Int64.add addr (Int64.mul 8L numOfInstrInElem))
-               )
-  in recursive_builder p map mem_bot
-  
-
-let is_elem_text (e:elem): bool =
-  match e.asm with
-  | Text _ -> true
-  | _ -> false
-
-let is_elem_data (e:elem): bool = not (is_elem_text e)
-
-(* Text is the actual code and ... *)
-  (* elem list -> ((sbyte list) * quad) *)
-let concat_and_flatten_texts (p:prog): (elem list) * quad = 
-  let text_elems: elem list = List.filter (is_elem_text) p in
-  (* count the number of instructions for each text element *)
-  let instr_lists: (ins list) list = 
-                      List.map (fun e -> 
-                        match e.asm with 
-                        | Text ins_list -> ins_list
-                        | _ -> []) text_elems in
-
-  let all_ins: ins list = List.concat instr_lists in
-  let length = Int64.mul 8L (Int64.of_int (List.length all_ins)) in
-    (text_elems, length)
-
-
-
-(* ... data are words or Labels/immediate*)
-let concat_and_flatten_datas (p:prog): (elem list) * quad = 
-  let data_elems: elem list = List.filter (is_elem_data) p in
-  let data_lists: (data list) list = List.map (fun e -> match e.asm with | Data d -> d | _ -> []) data_elems in
-  let all_data: data list = List.concat data_lists in
-  let data_length = List.fold_left (fun acc d ->
-    
-    match d with
-    | Asciz s -> String.length s + 1 + acc
-    | Quad (Lit n) -> acc + 8
-    | Quad (Lbl l) -> String.length l + 1 + acc
-    (*| Quad i -> acc + 8 (*TODO: can a label Immediate be longer? *)*)
-    ) 0 all_data in
-    (data_elems, Int64.of_int data_length)
-
-let find_main_entry (p:prog): quad = failwith "finding main"
-  
-
-(* TODO: raise Undefined SYmbol *)
-(* use symtab to replace labels present in data segments with absolute addresses *)
-let resolve_labels (p:prog) (data_pos: quad) (symtab: quad StringMap.t) (text_sgmts: elem list) (data_sgmts: elem list): elem list = failwith "unresolved lables"
-  (* let addr = (match (map.find_opt e.lbl) with
-            | Some x -> x 
-            | None -> failwith "Invalid label found... should not happen"
-            ) in*) failwith "Continue resolving the label"
-
-(* Note: labels have already been resolved. You do not care about them *)
-let serialize (es: elem list): sbyte list = 
-  let elem_to_sbyte_list e =
-    (match e with
-    | {asm = Text instr; _} -> List.concat (List.map sbytes_of_ins instr)
-    | {asm = Data d; _} -> List.concat (List.map sbytes_of_data d)
-    ) in
-List.concat (List.map (elem_to_sbyte_list) es)
-
+(* A simple string-keyed map to use for the symbol table *)
+module SymTbl = Map.Make(String)
 
 (* Convert an X86 program into an object file:
    - separate the text and data segments
    - compute the size of each segment
-      Note: the size of an Asciz string section is (1 + the string length)
-            due to the null terminator
-
-   - resolve the labels to concrete addresses and 'patch' the instructions to 
-     replace Lbl values with the corresponding Imm values.
-
+   - resolve the labels to concrete addresses and 'patch' the instructions to
+     replace Lbl values with the corresponding Lit values.
    - the text segment starts at the lowest address
    - the data segment starts after the text segment
-
-  HINT: List.fold_left and List.fold_right are your friends.
- *)
-let assemble (p:prog) : exec =
-  (* step 1:
-        - Find all text labels and concatenate them
-            -> Count length of text segment
-            -> 
-        - --""---- data -----------""-------------
-    step 2:
-        - Build symbol table: map lbl to absolute address
-    step3:
-        - Do not forget to resolve main
-        - 
-    step 4:
-        - we ball
-   *)
-
-  (* Two pass approach: *)
-
-   (* start first pass*)
-   (* Flatten and concat text and data *)
-   let text_elems, length_txt = concat_and_flatten_texts p in
-   let data_elems, length_data = concat_and_flatten_datas p in
-   
-   (* Compute memory layout *)
-   let text_pos : quad = mem_bot in
-   let data_pos : quad = Int64.add text_pos length_txt in
-   
-   (* Generate symbtab *) (* second pass*)
-   (* Symtab maps labels of string to absolute addresses *)
-   let symbol_table : quad StringMap.t = build_symbol_table (text_elems @ data_elems) in (* TODO: Throw exceptions on labels*)
-
-   (* Resolve main *) (* TODO: this throws the 'main' exception*)
-   let main_entry = find_main_entry p in 
-   (* Resolve the labels in the newly generated exec. As text/data will be reordered the absolute values
-   of addresses change -> make it dependent on the text and data_segments *)
-   (* Resolver replaces labels in instructions with actual addresses
-      AND TODO: Quad Data
-   *)
-   let resolved_labels_data: elem list  = resolve_labels p data_pos symbol_table text_elems data_elems in
-   let serialized_txt: sbyte list = serialize text_elems in
-   let serialized_data: sbyte list = serialize resolved_labels_data in
-   {
-    entry = main_entry;
-    text_pos = text_pos;
-    data_pos = data_pos;
-    text_seg = serialized_txt;
-    data_seg = serialized_data
-   }
-
-(* Convert an object file into an executable machine state. 
-    - allocate the mem array
-    - set up the memory state by writing the symbolic bytes to the 
-      appropriate locations 
-    - create the inital register state
-      - initialize rip to the entry point address
-      - initializes rsp to the last word in memory 
-      - the other registers are initialized to 0
-    - the condition code flags start as 'false'
-
-  Hint: The Array.make, Array.blit, and Array.of_list library functions 
-  may be of use.
 *)
-let load {entry; text_pos; data_pos; text_seg; data_seg} : mach = 
-failwith "load unimplemented"
+let assemble (p:prog) : exec =
+  let text_pos = 0x400000L in
+
+  let size_of_data = function
+    | Quad _ -> 8L
+    | Asciz s -> Int64.of_int (String.length s + 1)
+  in
+
+  let size_of_asm = function
+    | Text insns -> Int64.mul (Int64.of_int (List.length insns)) ins_size
+    | Data ds -> List.fold_left (fun acc d -> Int64.add acc (size_of_data d)) 0L ds
+  in
+
+  let text_elems, data_elems =
+    List.partition (fun e -> match e.asm with Text _ -> true | Data _ -> false) p
+  in
+
+  (* PASS 1: Build Symbol Table *)
+  let sym_tbl_pass1, data_pos =
+    List.fold_left (fun (tbl, current_addr) elem ->
+      if SymTbl.mem elem.lbl tbl then raise (Redefined_sym elem.lbl);
+      let new_tbl = SymTbl.add elem.lbl current_addr tbl in
+      let size = size_of_asm elem.asm in
+      (new_tbl, Int64.add current_addr size)
+    ) (SymTbl.empty, text_pos) text_elems
+  in
+
+  let final_sym_tbl, _ =
+    List.fold_left (fun (tbl, current_addr) elem ->
+      if SymTbl.mem elem.lbl tbl then raise (Redefined_sym elem.lbl);
+      let new_tbl = SymTbl.add elem.lbl current_addr tbl in
+      let size = size_of_asm elem.asm in
+      (new_tbl, Int64.add current_addr size)
+    ) (sym_tbl_pass1, data_pos) data_elems
+  in
+
+  let entry =
+    try SymTbl.find "main" final_sym_tbl
+    with Not_found -> raise (Undefined_sym "main")
+  in
+
+  (* PASS 2: Patch and Serialize *)
+  let patch_imm l =
+    try Lit (SymTbl.find l final_sym_tbl)
+    with Not_found -> raise (Undefined_sym l)
+  in
+
+  let patch_operand = function
+    | Imm (Lbl l)     -> Imm (patch_imm l)
+    | Ind1 (Lbl l)    -> Ind1 (patch_imm l)
+    | Ind3 (Lbl l, r) -> Ind3 (patch_imm l, r)
+    | o -> o
+  in
+
+  let patch_ins (opcode, operands) =
+    (opcode, List.map patch_operand operands)
+  in
+
+  let patch_data = function
+    | Quad (Lbl l) -> Quad (patch_imm l)
+    | d -> d
+  in
+
+  let text_seg =
+    List.concat_map (fun elem ->
+      match elem.asm with
+      | Text insns -> List.concat_map (fun i -> sbytes_of_ins (patch_ins i)) insns
+      | _ -> []
+    ) text_elems
+  in
+
+  let data_seg =
+    List.concat_map (fun elem ->
+      match elem.asm with
+      | Data ds -> List.concat_map (fun d -> sbytes_of_data (patch_data d)) ds
+      | _ -> []
+    ) data_elems
+  in
+
+  { entry; text_pos; data_pos; text_seg; data_seg }
+
+(* Convert an object file into an executable machine state.
+    - allocate the mem array and write the symbolic bytes to the
+      appropriate locations
+    - create the initial register state:
+      - initialize rip to the entry point address
+      - initializes rsp to the last word in memory
+      - other registers are initialized to 0
+    - the condition code flags start as 'false'
+*)
+let load {entry; text_pos; data_pos; text_seg; data_seg} : mach =
+  let mem = Array.make mem_size (Byte '\x00') in
+
+  let text_idx = get_addr text_pos in
+  List.iteri (fun i sbyte -> mem.(text_idx + i) <- sbyte) text_seg;
+  
+  let data_idx = get_addr data_pos in
+  List.iteri (fun i sbyte -> mem.(data_idx + i) <- sbyte) data_seg;
+
+  let regs = Array.make nregs 0L in
+  regs.(rind Rip) <- entry;
+  
+  (* Stack grows down from the top of memory *)
+  let rsp_addr = Int64.sub mem_top 8L in
+  regs.(rind Rsp) <- rsp_addr;
+
+  (* Push the exit_addr onto the stack. The 'retq' from main will pop this
+     value into %rip, halting the simulation. *)
+  let exit_sbytes = sbytes_of_int64 exit_addr in
+  let rsp_idx = get_addr rsp_addr in
+  List.iteri (fun i sbyte -> mem.(rsp_idx + i) <- sbyte) exit_sbytes;
+
+  let flags = { fo = false; fs = false; fz = false } in
+  { flags; regs; mem }
