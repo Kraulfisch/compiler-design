@@ -1,5 +1,7 @@
   (* X86lite Simulator *)
 
+  (* Usage of AI: We used AI to help with syntax of Ocaml, explain and clarify methods and tasks and brainstorming for ideas*)
+
   (* See the documentation in the X86lite specification, available on the 
     course web pages, for a detailed explanation of the instruction
     semantics.
@@ -382,7 +384,7 @@
                 let rip_next = Int64.add m.regs.(rind Rip) ins_size in
                 m.regs.(rind Rsp) <- rsp_new;
                 write_res m rip_next (MemAddr rsp_new);
-                (* Push next addres i.e curr Rip + 8 *)
+                (* Push next addres i.e curr Rip + 7 *)
                 (* write_res m src_val (RegAddr Rip) *)
                 m.regs.(rind Rip) <- src_val
     )  
