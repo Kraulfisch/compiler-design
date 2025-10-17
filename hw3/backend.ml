@@ -236,16 +236,24 @@ let rec size_ty (tdecls:(tid * ty) list) (t:Ll.ty) : int =
       by the path so far
 *)
 let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : ins list =
+  (* Helper to resolve a named type to its underlying definition *)
+  let rec resolve_type t =
+    match t with
+    | Namedt tid -> resolve_type (lookup ctxt.tdecls tid)
+    | _ -> t
+  in
+
+  (* Processes the path after the first index *)
   let rec gep_helper current_ty path_remaining acc_insns =
     match path_remaining with
     | [] -> acc_insns
     | idx_op :: rest_path ->
         let (offset_insns, next_ty) =
-          match current_ty with
+          match resolve_type current_ty with (* Resolve type before processing *)
           | Struct ts ->
-              let idx = match idx_op with 
-                | Const i -> Int64.to_int i 
-                | _ -> failwith "GEP struct index must be a constant" 
+              let idx = match idx_op with
+                | Const i -> Int64.to_int i
+                | _ -> failwith "GEP struct index must be a constant"
               in
               let rec sum_sizes i acc =
                 if i >= idx then acc
@@ -257,7 +265,7 @@ let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : 
               else []
               in
               (insns, List.nth ts idx)
-              
+
           | Array (_, elem_ty) ->
               let size = size_ty ctxt.tdecls elem_ty in
               let insns = [
@@ -266,25 +274,20 @@ let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : 
                 (Addq, [Reg Rcx; Reg Rax])
               ] in
               (insns, elem_ty)
-              
-          | Namedt tid -> 
-              let resolved_ty = lookup ctxt.tdecls tid in
-              gep_helper resolved_ty path_remaining acc_insns;
-              ([], resolved_ty) (* This will be re-evaluated *)
-              
+
           | _ -> failwith "GEP path invalid for this type"
         in
         gep_helper next_ty rest_path (acc_insns @ offset_insns)
   in
-  
+
   let base_ty, base_op = op in
-  let deref_ty = match base_ty with 
-    | Ptr t -> t 
-    | _ -> failwith "GEP base must be a pointer" 
+  let deref_ty = match base_ty with
+    | Ptr t -> t
+    | _ -> failwith "GEP base must be a pointer"
   in
-  
+
   let initial_insns = [compile_operand ctxt (Reg Rax) base_op] in
-  
+
   match path with
   | [] -> initial_insns
   | first_idx :: rest_path ->
@@ -296,7 +299,6 @@ let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : 
         (Addq, [Reg Rcx; Reg Rax])
       ] in
       initial_insns @ first_offset @ (gep_helper deref_ty rest_path [])
-
 
 
 (* compiling instructions  -------------------------------------------------- *)

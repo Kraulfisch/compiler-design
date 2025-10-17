@@ -3,6 +3,8 @@
 /home/student/.opam/4.13.1/bin/ocamldep.opt -modules main.ml > main.ml.depends # cached
 # Target: util/assert.mli.depends, tags: { extension:mli, file:util/assert.mli, ocaml, ocamldep, quiet }
 /home/student/.opam/4.13.1/bin/ocamldep.opt -modules util/assert.mli > util/assert.mli.depends # cached
+# Target: util/assert.cmi, tags: { byte, compile, extension:mli, file:util/assert.mli, interf, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I util -I sharedtests -I x86 -I ll -o util/assert.cmi util/assert.mli # cached
 # Target: driver.ml.depends, tags: { extension:ml, file:driver.ml, ocaml, ocamldep, quiet }
 /home/student/.opam/4.13.1/bin/ocamldep.opt -modules driver.ml > driver.ml.depends # cached
 # Target: backend.ml.depends, tags: { extension:ml, file:backend.ml, ocaml, ocamldep, quiet }
@@ -25,6 +27,8 @@
 /home/student/.opam/4.13.1/bin/ocamldep.opt -modules ll/llutil.ml > ll/llutil.ml.depends # cached
 # Target: ll/llutil.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:ll/llutil.cmo, file:ll/llutil.ml, implem, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llutil.cmo ll/llutil.ml # cached
+# Target: ll/llinterp.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:ll/llinterp.cmo, file:ll/llinterp.ml, implem, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llinterp.cmo ll/llinterp.ml # cached
 # Target: ll/lllexer.mll, tags: { extension:mll, file:ll/lllexer.mll, lexer, ocaml, ocamllex, quiet }
 /home/student/.opam/4.13.1/bin/ocamllex.opt -q ll/lllexer.mll # cached
 # Target: ll/lllexer.ml.depends, tags: { extension:ml, file:ll/lllexer.ml, ocaml, ocamldep, quiet }
@@ -37,94 +41,80 @@ menhir --ocamlc '/home/student/.opam/4.13.1/bin/ocamlc.opt -I ll -I sharedtests 
 /home/student/.opam/4.13.1/bin/ocamldep.opt -modules ll/llparser.mli > ll/llparser.mli.depends # cached
 # Target: ll/llparser.cmi, tags: { byte, compile, extension:mli, file:ll/llparser.mli, interf, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llparser.cmi ll/llparser.mli # cached
+# Target: ll/lllexer.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:ll/lllexer.cmo, file:ll/lllexer.ml, implem, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I ll -I sharedtests -I x86 -I util -o ll/lllexer.cmo ll/lllexer.ml # cached
 # Target: backend.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:backend.cmo, file:backend.ml, implem, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o backend.cmo backend.ml
-+ /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o backend.cmo backend.ml
-File "backend.ml", line 272, characters 14-61:
-272 |               gep_helper resolved_ty path_remaining acc_insns;
-                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Warning 10 [non-unit-statement]: this expression should have type unit.
-# Target: ll/llinterp.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:ll/llinterp.cmo, file:ll/llinterp.ml, implem, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llinterp.cmo ll/llinterp.ml
-# Target: ll/lllexer.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:ll/lllexer.cmo, file:ll/lllexer.ml, implem, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I ll -I sharedtests -I x86 -I util -o ll/lllexer.cmo ll/lllexer.ml
 # Target: gradedtests.ml.depends, tags: { extension:ml, file:gradedtests.ml, ocaml, ocamldep, quiet }
-/home/student/.opam/4.13.1/bin/ocamldep.opt -modules gradedtests.ml > gradedtests.ml.depends
-# Target: util/assert.cmi, tags: { byte, compile, extension:mli, file:util/assert.mli, interf, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I util -I sharedtests -I x86 -I ll -o util/assert.cmi util/assert.mli
+/home/student/.opam/4.13.1/bin/ocamldep.opt -modules gradedtests.ml > gradedtests.ml.depends # cached
 # Target: driver.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:driver.cmo, file:driver.ml, implem, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o driver.cmo driver.ml
 # Target: sharedtests/sharedtests.ml.depends, tags: { extension:ml, file:sharedtests/sharedtests.ml, ocaml, ocamldep, quiet }
-/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/sharedtests.ml > sharedtests/sharedtests.ml.depends
+/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/sharedtests.ml > sharedtests/sharedtests.ml.depends # cached
 # Target: sharedtests/dbernhard.ml.depends, tags: { extension:ml, file:sharedtests/dbernhard.ml, ocaml, ocamldep, quiet }
-/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/dbernhard.ml > sharedtests/dbernhard.ml.depends
+/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/dbernhard.ml > sharedtests/dbernhard.ml.depends # cached
+# Target: sharedtests/dbernhard.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:sharedtests/dbernhard.cmo, file:sharedtests/dbernhard.ml, implem, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/dbernhard.cmo sharedtests/dbernhard.ml # cached
 # Target: gradedtests.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:gradedtests.cmo, file:gradedtests.ml, implem, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o gradedtests.cmo gradedtests.ml
 # Target: sharedtests/haenniro.ml.depends, tags: { extension:ml, file:sharedtests/haenniro.ml, ocaml, ocamldep, quiet }
-/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/haenniro.ml > sharedtests/haenniro.ml.depends
-# Target: sharedtests/nicdard.ml.depends, tags: { extension:ml, file:sharedtests/nicdard.ml, ocaml, ocamldep, quiet }
-/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/nicdard.ml > sharedtests/nicdard.ml.depends
-# Target: sharedtests/zikai.ml.depends, tags: { extension:ml, file:sharedtests/zikai.ml, ocaml, ocamldep, quiet }
-/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/zikai.ml > sharedtests/zikai.ml.depends
-# Target: sharedtests/dbernhard.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:sharedtests/dbernhard.cmo, file:sharedtests/dbernhard.ml, implem, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/dbernhard.cmo sharedtests/dbernhard.ml
+/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/haenniro.ml > sharedtests/haenniro.ml.depends # cached
 # Target: sharedtests/haenniro.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:sharedtests/haenniro.cmo, file:sharedtests/haenniro.ml, implem, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/haenniro.cmo sharedtests/haenniro.ml
+/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/haenniro.cmo sharedtests/haenniro.ml # cached
+# Target: sharedtests/nicdard.ml.depends, tags: { extension:ml, file:sharedtests/nicdard.ml, ocaml, ocamldep, quiet }
+/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/nicdard.ml > sharedtests/nicdard.ml.depends # cached
+# Target: sharedtests/zikai.ml.depends, tags: { extension:ml, file:sharedtests/zikai.ml, ocaml, ocamldep, quiet }
+/home/student/.opam/4.13.1/bin/ocamldep.opt -modules sharedtests/zikai.ml > sharedtests/zikai.ml.depends # cached
+# Target: sharedtests/zikai.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:sharedtests/zikai.cmo, file:sharedtests/zikai.ml, implem, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/zikai.cmo sharedtests/zikai.ml # cached
 # Target: sharedtests/nicdard.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:sharedtests/nicdard.cmo, file:sharedtests/nicdard.ml, implem, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/nicdard.cmo sharedtests/nicdard.ml
-# Target: sharedtests/zikai.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:sharedtests/zikai.cmo, file:sharedtests/zikai.ml, implem, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/zikai.cmo sharedtests/zikai.ml
 # Target: studenttests.ml.depends, tags: { extension:ml, file:studenttests.ml, ocaml, ocamldep, quiet }
-/home/student/.opam/4.13.1/bin/ocamldep.opt -modules studenttests.ml > studenttests.ml.depends
+/home/student/.opam/4.13.1/bin/ocamldep.opt -modules studenttests.ml > studenttests.ml.depends # cached
+# Target: studenttests.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:studenttests.cmo, file:studenttests.ml, implem, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o studenttests.cmo studenttests.ml # cached
 # Target: sharedtests/sharedtests.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:sharedtests/sharedtests.cmo, file:sharedtests/sharedtests.ml, implem, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/sharedtests.cmo sharedtests/sharedtests.ml
-# Target: studenttests.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:studenttests.cmo, file:studenttests.ml, implem, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o studenttests.cmo studenttests.ml
 # Target: main.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:main.cmo, file:main.ml, implem, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I sharedtests -I x86 -I ll -I util -o main.cmo main.ml
 # Target: util/assert.ml.depends, tags: { extension:ml, file:util/assert.ml, ocaml, ocamldep, quiet }
-/home/student/.opam/4.13.1/bin/ocamldep.opt -modules util/assert.ml > util/assert.ml.depends
+/home/student/.opam/4.13.1/bin/ocamldep.opt -modules util/assert.ml > util/assert.ml.depends # cached
+# Target: util/assert.cmx, tags: { compile, extension:cmx, extension:ml, file:util/assert.cmx, file:util/assert.ml, implem, native, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I util -I sharedtests -I x86 -I ll -o util/assert.cmx util/assert.ml # cached
 # Target: ll/ll.cmx, tags: { compile, extension:cmx, extension:ml, file:ll/ll.cmx, file:ll/ll.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/ll.cmx ll/ll.ml
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/ll.cmx ll/ll.ml # cached
 # Target: util/platform.cmx, tags: { compile, extension:cmx, extension:ml, file:util/platform.cmx, file:util/platform.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I util -I sharedtests -I x86 -I ll -o util/platform.cmx util/platform.ml
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I util -I sharedtests -I x86 -I ll -o util/platform.cmx util/platform.ml # cached
 # Target: x86/x86.cmx, tags: { compile, extension:cmx, extension:ml, file:x86/x86.cmx, file:x86/x86.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I x86 -I sharedtests -I ll -I util -o x86/x86.cmx x86/x86.ml
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I x86 -I sharedtests -I ll -I util -o x86/x86.cmx x86/x86.ml # cached
 # Target: ll/llutil.cmx, tags: { compile, extension:cmx, extension:ml, file:ll/llutil.cmx, file:ll/llutil.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llutil.cmx ll/llutil.ml
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llutil.cmx ll/llutil.ml # cached
+# Target: ll/llinterp.cmx, tags: { compile, extension:cmx, extension:ml, file:ll/llinterp.cmx, file:ll/llinterp.ml, implem, native, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llinterp.cmx ll/llinterp.ml # cached
 # Target: ll/llparser.ml.depends, tags: { extension:ml, file:ll/llparser.ml, ocaml, ocamldep, quiet }
-/home/student/.opam/4.13.1/bin/ocamldep.opt -modules ll/llparser.ml > ll/llparser.ml.depends
+/home/student/.opam/4.13.1/bin/ocamldep.opt -modules ll/llparser.ml > ll/llparser.ml.depends # cached
 # Target: ll/llparser.cmx, tags: { compile, extension:cmx, extension:ml, file:ll/llparser.cmx, file:ll/llparser.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llparser.cmx ll/llparser.ml
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llparser.cmx ll/llparser.ml # cached
+# Target: ll/lllexer.cmx, tags: { compile, extension:cmx, extension:ml, file:ll/lllexer.cmx, file:ll/lllexer.ml, implem, native, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/lllexer.cmx ll/lllexer.ml # cached
 # Target: backend.cmx, tags: { compile, extension:cmx, extension:ml, file:backend.cmx, file:backend.ml, implem, native, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o backend.cmx backend.ml
-+ /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o backend.cmx backend.ml
-File "backend.ml", line 272, characters 14-61:
-272 |               gep_helper resolved_ty path_remaining acc_insns;
-                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Warning 10 [non-unit-statement]: this expression should have type unit.
-# Target: ll/llinterp.cmx, tags: { compile, extension:cmx, extension:ml, file:ll/llinterp.cmx, file:ll/llinterp.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/llinterp.cmx ll/llinterp.ml
-# Target: ll/lllexer.cmx, tags: { compile, extension:cmx, extension:ml, file:ll/lllexer.cmx, file:ll/lllexer.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I ll -I sharedtests -I x86 -I util -o ll/lllexer.cmx ll/lllexer.ml
-# Target: util/assert.cmx, tags: { compile, extension:cmx, extension:ml, file:util/assert.cmx, file:util/assert.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I util -I sharedtests -I x86 -I ll -o util/assert.cmx util/assert.ml
 # Target: driver.cmx, tags: { compile, extension:cmx, extension:ml, file:driver.cmx, file:driver.ml, implem, native, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o driver.cmx driver.ml
+# Target: sharedtests/dbernhard.cmx, tags: { compile, extension:cmx, extension:ml, file:sharedtests/dbernhard.cmx, file:sharedtests/dbernhard.ml, implem, native, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/dbernhard.cmx sharedtests/dbernhard.ml # cached
 # Target: gradedtests.cmx, tags: { compile, extension:cmx, extension:ml, file:gradedtests.cmx, file:gradedtests.ml, implem, native, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o gradedtests.cmx gradedtests.ml
-# Target: sharedtests/dbernhard.cmx, tags: { compile, extension:cmx, extension:ml, file:sharedtests/dbernhard.cmx, file:sharedtests/dbernhard.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/dbernhard.cmx sharedtests/dbernhard.ml
 # Target: sharedtests/haenniro.cmx, tags: { compile, extension:cmx, extension:ml, file:sharedtests/haenniro.cmx, file:sharedtests/haenniro.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/haenniro.cmx sharedtests/haenniro.ml
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/haenniro.cmx sharedtests/haenniro.ml # cached
+# Target: sharedtests/zikai.cmx, tags: { compile, extension:cmx, extension:ml, file:sharedtests/zikai.cmx, file:sharedtests/zikai.ml, implem, native, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/zikai.cmx sharedtests/zikai.ml # cached
 # Target: sharedtests/nicdard.cmx, tags: { compile, extension:cmx, extension:ml, file:sharedtests/nicdard.cmx, file:sharedtests/nicdard.ml, implem, native, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/nicdard.cmx sharedtests/nicdard.ml
-# Target: sharedtests/zikai.cmx, tags: { compile, extension:cmx, extension:ml, file:sharedtests/zikai.cmx, file:sharedtests/zikai.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/zikai.cmx sharedtests/zikai.ml
+# Target: studenttests.cmx, tags: { compile, extension:cmx, extension:ml, file:studenttests.cmx, file:studenttests.ml, implem, native, ocaml, quiet }
+/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o studenttests.cmx studenttests.ml # cached
 # Target: sharedtests/sharedtests.cmx, tags: { compile, extension:cmx, extension:ml, file:sharedtests/sharedtests.cmx, file:sharedtests/sharedtests.ml, implem, native, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o sharedtests/sharedtests.cmx sharedtests/sharedtests.ml
-# Target: studenttests.cmx, tags: { compile, extension:cmx, extension:ml, file:studenttests.cmx, file:studenttests.ml, implem, native, ocaml, quiet }
-/home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o studenttests.cmx studenttests.ml
 # Target: main.cmx, tags: { compile, extension:cmx, extension:ml, file:main.cmx, file:main.ml, implem, native, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I sharedtests -I x86 -I ll -I util -o main.cmx main.ml
 # Target: main.native, tags: { dont_link_with, extension:native, file:main.native, link, native, ocaml, program, quiet }
