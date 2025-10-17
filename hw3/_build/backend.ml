@@ -91,9 +91,9 @@ let lookup m x = List.assoc x m
 let compile_operand (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
   function
   | Null -> (Movq, [Imm (Lit 0L); dest])
-  | Const i -> (Movq, [Imm (Lit i); dest])
-  | Gid gid -> (Leaq, [Ind3 (Lbl (Platform.mangle gid), Rip); dest])
+  | Const c -> (Movq, [Imm (Lit c); dest])
   | Id uid -> (Movq, [lookup ctxt.layout uid; dest])
+  | Gid gid -> (Leaq, [Ind3 (Lbl (Platform.mangle gid), Rip); dest])
 
 
 
@@ -117,48 +117,64 @@ let compile_operand (ctxt:ctxt) (dest:X86.operand) : Ll.operand -> ins =
    needed). ]
 *)
 
-let arg_registers = [Rdi; Rsi; Rdx; Rcx; R08; R09]
+let arg_regs = [Rdi; Rsi; Rdx; Rcx; R08; R09]
 
-let compile_call (ctxt:ctxt) (fn_op:Ll.operand) (args:(ty * Ll.operand) list) : ins list =
+let compile_call (ctxt:ctxt) (uid:uid) (op:Ll.operand) (args:(ty * Ll.operand) list) : ins list =
   let num_args = List.length args in
   let num_stack_args = max 0 (num_args - 6) in
   
-  (* Move arguments to proper locations *)
-  let move_args =
-    List.mapi (fun i (_, arg) ->
-      if i < 6 then
-        (* First 6 args go into registers *)
-        [compile_operand ctxt (Reg (List.nth arg_registers i)) arg]
-      else
-        (* Remaining args are pushed onto stack in reverse order *)
-        []
-    ) args |> List.flatten
-  in
-  
-  (* Push stack arguments in reverse order (right to left) *)
+  (* Step 1: Push stack arguments in reverse order *)
   let push_stack_args =
     if num_stack_args > 0 then
-      let stack_args = List.filteri (fun i _ -> i >= 6) args |> List.rev in
-      List.map (fun (_, arg) ->
-        [compile_operand ctxt (Reg Rax) arg; (Pushq, [Reg Rax])]
-      ) stack_args |> List.flatten
+      let rec push_from i acc =
+        if i < 6 then acc
+        else
+          let (_, arg_op) = List.nth args i in
+          push_from (i - 1) (compile_operand ctxt (Reg Rax) arg_op :: (Pushq, [Reg Rax]) :: acc)
+      in
+      push_from (num_args - 1) []
     else []
   in
   
-  (* Call the function *)
-  let call_insn = match fn_op with
+  (* Step 2: Move first 6 arguments to registers *)
+  let move_to_regs =
+    let rec move_n i acc =
+      if i >= min 6 num_args then acc
+      else
+        let (_, arg_op) = List.nth args i in
+        let reg = List.nth arg_regs i in
+        move_n (i + 1) (acc @ [compile_operand ctxt (Reg reg) arg_op])
+    in
+    move_n 0 []
+  in
+  
+  (* Step 3: Align stack if necessary (16-byte alignment) *)
+  let align_stack =
+    if num_stack_args mod 2 <> 0 then
+      [(Subq, [Imm (Lit 8L); Reg Rsp])]
+    else []
+  in
+  
+  (* Step 4: The call instruction *)
+  let call_insn = match op with
     | Gid gid -> [(Callq, [Imm (Lbl (Platform.mangle gid))])]
-    | _ -> [compile_operand ctxt (Reg Rax) fn_op; (Callq, [Reg Rax])]
+    | _ -> [compile_operand ctxt (Reg Rax) op; (Callq, [Reg Rax])]
   in
   
-  (* Clean up stack if needed *)
+  (* Step 5: Clean up stack *)
   let cleanup_stack =
-    if num_stack_args > 0 then
-      [(Addq, [Imm (Lit (Int64.of_int (8 * num_stack_args))); Reg Rsp])]
+    let total_pushed = num_stack_args * 8 + (if num_stack_args mod 2 <> 0 then 8 else 0) in
+    if total_pushed > 0 then
+      [(Addq, [Imm (Lit (Int64.of_int total_pushed)); Reg Rsp])]
     else []
   in
   
-  push_stack_args @ move_args @ call_insn @ cleanup_stack
+  (* Step 6: Move return value to destination *)
+  let dest_op = lookup ctxt.layout uid in
+  let store_result = [(Movq, [Reg Rax; dest_op])] in
+  
+  push_stack_args @ move_to_regs @ align_stack @ call_insn @ cleanup_stack @ store_result
+
 
 
 (* compiling getelementptr (gep)  ------------------------------------------- *)
@@ -187,8 +203,8 @@ let rec size_ty (tdecls:(tid * ty) list) (t:Ll.ty) : int =
   match t with
   | Void | I8 | Fun _ -> 0
   | I1 | I64 | Ptr _ -> 8
-  | Struct tys -> List.fold_left (fun acc ty -> acc + size_ty tdecls ty) 0 tys
-  | Array (n, ty) -> n * size_ty tdecls ty
+  | Struct ts -> List.fold_left (fun acc t' -> acc + size_ty tdecls t') 0 ts
+  | Array (n, t') -> n * size_ty tdecls t'
   | Namedt tid -> size_ty tdecls (lookup tdecls tid)
 
 
@@ -201,86 +217,85 @@ let rec size_ty (tdecls:(tid * ty) list) (t:Ll.ty) : int =
    2. the value of op is the base address of the calculation
 
    3. the first index in the path is treated as the index into an array
-     of elements of type t located at the base address
+      of elements of type t located at the base address
 
    4. subsequent indices are interpreted according to the type t:
 
-     - if t is a struct, the index must be a constant n and it
-       picks out the n'th element of the struct. [ NOTE: the offset
-       within the struct of the n'th element is determined by the
-       sizes of the types of the previous elements ]
+      - if t is a struct, the index must be a constant n and it
+        picks out the n'th element of the struct. [ NOTE: the offset
+        within the struct of the n'th element is determined by the
+        sizes of the types of the previous elements ]
 
-     - if t is an array, the index can be any operand, and its
-       value determines the offset within the array.
+      - if t is an array, the index can be any operand, and its
+        value determines the offset within the array.
 
-     - if t is any other type, the path is invalid
+      - if t is any other type, the path is invalid
 
    5. if the index is valid, the remainder of the path is computed as
       in (4), but relative to the type f the sub-element picked out
       by the path so far
 *)
 let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : ins list =
-  let (ptr_ty, ptr_op) = op in
-  
-  (* Extract the element type from pointer *)
-  let elt_ty = match ptr_ty with
-    | Ptr t -> t
-    | _ -> failwith "gep: operand not a pointer type"
+  let rec gep_helper current_ty path_remaining acc_insns =
+    match path_remaining with
+    | [] -> acc_insns
+    | idx_op :: rest_path ->
+        let (offset_insns, next_ty) =
+          match current_ty with
+          | Struct ts ->
+              let idx = match idx_op with 
+                | Const i -> Int64.to_int i 
+                | _ -> failwith "GEP struct index must be a constant" 
+              in
+              let rec sum_sizes i acc =
+                if i >= idx then acc
+                else sum_sizes (i + 1) (acc + size_ty ctxt.tdecls (List.nth ts i))
+              in
+              let offset = sum_sizes 0 0 in
+              let insns = if offset <> 0 then
+                [(Addq, [Imm (Lit (Int64.of_int offset)); Reg Rax])]
+              else []
+              in
+              (insns, List.nth ts idx)
+              
+          | Array (_, elem_ty) ->
+              let size = size_ty ctxt.tdecls elem_ty in
+              let insns = [
+                compile_operand ctxt (Reg Rcx) idx_op;
+                (Imulq, [Imm (Lit (Int64.of_int size)); Reg Rcx]);
+                (Addq, [Reg Rcx; Reg Rax])
+              ] in
+              (insns, elem_ty)
+              
+          | Namedt tid -> 
+              let resolved_ty = lookup ctxt.tdecls tid in
+              gep_helper resolved_ty path_remaining acc_insns;
+              ([], resolved_ty) (* This will be re-evaluated *)
+              
+          | _ -> failwith "GEP path invalid for this type"
+        in
+        gep_helper next_ty rest_path (acc_insns @ offset_insns)
   in
   
-  (* Load base pointer into Rax *)
-  let base_code = [compile_operand ctxt (Reg Rax) ptr_op] in
-  
-  (* Process the path *)
-  let rec process_path ty path_ops offset_code =
-    match path_ops with
-    | [] -> offset_code
-    | index :: rest ->
-        begin match ty with
-        | Struct tys ->
-            (* Index must be a constant for structs *)
-            let idx = match index with
-              | Const i -> Int64.to_int i
-              | _ -> failwith "gep: non-constant struct index"
-            in
-            (* Calculate offset to nth field *)
-            let field_offset = 
-              List.filteri (fun i _ -> i < idx) tys
-              |> List.fold_left (fun acc t -> acc + size_ty ctxt.tdecls t) 0
-            in
-            let new_ty = List.nth tys idx in
-            let new_code = 
-              if field_offset <> 0 then
-                offset_code @ [(Addq, [Imm (Lit (Int64.of_int field_offset)); Reg Rax])]
-              else offset_code
-            in
-            process_path new_ty rest new_code
-            
-        | Array (_, elt_ty) ->
-            (* Index can be any operand for arrays *)
-            let elt_size = size_ty ctxt.tdecls elt_ty in
-            let idx_code = [
-              compile_operand ctxt (Reg Rcx) index;
-              (Imulq, [Imm (Lit (Int64.of_int elt_size)); Reg Rcx]);
-              (Addq, [Reg Rcx; Reg Rax])
-            ] in
-            process_path elt_ty rest (offset_code @ idx_code)
-            
-        | _ -> failwith "gep: invalid path for type"
-        end
+  let base_ty, base_op = op in
+  let deref_ty = match base_ty with 
+    | Ptr t -> t 
+    | _ -> failwith "GEP base must be a pointer" 
   in
   
-  (* Handle first index (array indexing from base pointer) *)
+  let initial_insns = [compile_operand ctxt (Reg Rax) base_op] in
+  
   match path with
-  | [] -> base_code
+  | [] -> initial_insns
   | first_idx :: rest_path ->
-      let elt_size = size_ty ctxt.tdecls elt_ty in
-      let first_idx_code = [
+      (* Handle first index as array indexing *)
+      let elem_size = size_ty ctxt.tdecls deref_ty in
+      let first_offset = [
         compile_operand ctxt (Reg Rcx) first_idx;
-        (Imulq, [Imm (Lit (Int64.of_int elt_size)); Reg Rcx]);
+        (Imulq, [Imm (Lit (Int64.of_int elem_size)); Reg Rcx]);
         (Addq, [Reg Rcx; Reg Rax])
       ] in
-      base_code @ first_idx_code @ (process_path elt_ty rest_path [])
+      initial_insns @ first_offset @ (gep_helper deref_ty rest_path [])
 
 
 
@@ -308,61 +323,64 @@ let compile_gep (ctxt:ctxt) (op : Ll.ty * Ll.operand) (path: Ll.operand list) : 
    - Bitcast: does nothing interesting at the assembly level
 *)
 let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
-  let dest = lookup ctxt.layout uid in
+  let dest_op = lookup ctxt.layout uid in
   match i with
   | Binop (bop, _, op1, op2) ->
-      let op_code = match bop with
-        | Add -> Addq | Sub -> Subq | Mul -> Imulq
-        | Shl -> Shlq | Lshr -> Shrq | Ashr -> Sarq
-        | And -> Andq | Or -> Orq | Xor -> Xorq
+      let x86_op = match bop with
+        | Add -> Addq
+        | Sub -> Subq
+        | Mul -> Imulq
+        | Shl -> Shlq
+        | Lshr -> Shrq
+        | Ashr -> Sarq
+        | And -> Andq
+        | Or -> Orq
+        | Xor -> Xorq
       in
       [compile_operand ctxt (Reg Rax) op1;
        compile_operand ctxt (Reg Rcx) op2;
-       (op_code, [Reg Rcx; Reg Rax]);
-       (Movq, [Reg Rax; dest])]
-       
-  | Alloca _ ->
-      (* Allocate 8 bytes on stack and return pointer *)
-      [(Subq, [Imm (Lit 8L); Reg Rsp]);
-       (Movq, [Reg Rsp; dest])]
-       
-  | Load (_, op) ->
-      [compile_operand ctxt (Reg Rax) op;
-       (Movq, [Ind2 Rax; Reg Rax]);
-       (Movq, [Reg Rax; dest])]
-       
-  | Store (_, src_op, dst_op) ->
-      [compile_operand ctxt (Reg Rax) src_op;
-       compile_operand ctxt (Reg Rcx) dst_op;
-       (Movq, [Reg Rax; Ind2 Rcx])]
+       (x86_op, [Reg Rcx; Reg Rax]);
+       (Movq, [Reg Rax; dest_op])]
        
   | Icmp (cnd, _, op1, op2) ->
-      let cc = compile_cnd cnd in
       [compile_operand ctxt (Reg Rax) op1;
        compile_operand ctxt (Reg Rcx) op2;
        (Cmpq, [Reg Rcx; Reg Rax]);
-       (Set cc, [Reg Rax]);
+       (Set (compile_cnd cnd), [Reg Rax]);
        (Movq, [Reg Rax; Reg Rax]);
-       (Movq, [Reg Rax; dest])]
-
-  | Call (_, fn_op, args) ->
-      let call_code = compile_call ctxt fn_op args in
-      call_code @ [(Movq, [Reg Rax; dest])]
-      
+       (Movq, [Reg Rax; dest_op])]
+       
+  | Alloca _ ->
+      [(Subq, [Imm (Lit 8L); Reg Rsp]);
+       (Movq, [Reg Rsp; dest_op])]
+       
+  | Load (_, ptr_op) ->
+      [compile_operand ctxt (Reg Rax) ptr_op;
+       (Movq, [Ind2 Rax; Reg Rax]);
+       (Movq, [Reg Rax; dest_op])]
+       
+  | Store (_, val_op, ptr_op) ->
+      [compile_operand ctxt (Reg Rax) val_op;
+       compile_operand ctxt (Reg Rcx) ptr_op;
+       (Movq, [Reg Rax; Ind2 Rcx])]
+       
   | Bitcast (_, op, _) ->
       [compile_operand ctxt (Reg Rax) op;
-       (Movq, [Reg Rax; dest])]
+       (Movq, [Reg Rax; dest_op])]
        
   | Gep (ty, op, path) ->
-      let gep_code = compile_gep ctxt (ty, op) path in
-      gep_code @ [(Movq, [Reg Rax; dest])]
+      let gep_insns = compile_gep ctxt (ty, op) path in
+      gep_insns @ [(Movq, [Reg Rax; dest_op])]
+      
+  | Call (_, op, args) ->
+      compile_call ctxt uid op args
 
 
 
 (* compiling terminators  --------------------------------------------------- *)
 
 (* prefix the function name [fn] to a label to ensure that the X86 labels are
-   globally unique . *)
+   globally unique. *)
 let mk_lbl (fn:string) (l:string) = fn ^ "." ^ l
 
 (* Compile block terminators is not too difficult:
@@ -379,39 +397,39 @@ let mk_lbl (fn:string) (l:string) = fn ^ "." ^ l
 *)
 let compile_terminator (fn:string) (ctxt:ctxt) (t:Ll.terminator) : ins list =
   match t with
-  | Ret (_, None) ->
-      [(Movq, [Reg Rbp; Reg Rsp]);
-       (Popq, [Reg Rbp]);
-       (Retq, [])]
-       
   | Ret (_, Some op) ->
       [compile_operand ctxt (Reg Rax) op;
        (Movq, [Reg Rbp; Reg Rsp]);
        (Popq, [Reg Rbp]);
        (Retq, [])]
        
-  | Br lbl ->
-      [(Jmp, [Imm (Lbl (mk_lbl fn lbl))])]
+  | Ret (_, None) ->
+      [(Movq, [Reg Rbp; Reg Rsp]);
+       (Popq, [Reg Rbp]);
+       (Retq, [])]
+       
+  | Br l ->
+      [(Jmp, [Imm (Lbl (mk_lbl fn l))])]
       
-  | Cbr (op, lbl1, lbl2) ->
+  | Cbr (op, l1, l2) ->
       [compile_operand ctxt (Reg Rax) op;
        (Cmpq, [Imm (Lit 0L); Reg Rax]);
-       (J Neq, [Imm (Lbl (mk_lbl fn lbl1))]);
-       (Jmp, [Imm (Lbl (mk_lbl fn lbl2))])]
+       (J Neq, [Imm (Lbl (mk_lbl fn l1))]);
+       (Jmp, [Imm (Lbl (mk_lbl fn l2))])]
 
 
 (* compiling blocks --------------------------------------------------------- *)
 
-(* We have left this helper function here for you to complete. 
+(* We have left this helper function here for you to complete.  
    [fn] - the name of the function containing this block
    [ctxt] - the current context
    [blk]  - LLVM IR code for the block
 *)
 let compile_block (fn:string) (ctxt:ctxt) (blk:Ll.block) : ins list =
-  let insn_code = List.map (compile_insn ctxt) blk.insns |> List.flatten in
-  let (_, term) = blk.term in
-  let term_code = compile_terminator fn ctxt term in
-  insn_code @ term_code
+  let insns = List.map (compile_insn ctxt) blk.insns |> List.flatten in
+  let (_, terminator) = blk.term in
+  let terminator_insns = compile_terminator fn ctxt terminator in
+  insns @ terminator_insns
 
 let compile_lbl_block fn lbl ctxt blk : elem =
   Asm.text (mk_lbl fn lbl) (compile_block fn ctxt blk)
@@ -429,9 +447,9 @@ let compile_lbl_block fn lbl ctxt blk : elem =
    [ NOTE: the first six arguments are numbered 0 .. 5 ]
 *)
 let arg_loc (n : int) : operand =
-  if n < 6 then
-    Reg (List.nth arg_registers n)
-  else
+  if n < 6 then 
+    Reg (List.nth arg_regs n)
+  else 
     Ind3 (Lit (Int64.of_int (8 * (n - 4))), Rbp)
 
 
@@ -445,24 +463,10 @@ let arg_loc (n : int) : operand =
 
 *)
 let stack_layout (args : uid list) ((block, lbled_blocks):cfg) : layout =
-  let args_layout = List.mapi (fun i arg -> 
-    (arg, Ind3 (Lit (Int64.of_int (-8 * (i + 1))), Rbp))
-  ) args in
-  
-  let num_args = List.length args in
-  
-  (* Collect all uids from instructions *)
-  let insn_uids = 
-    let collect_block_insns blk = List.map fst blk.insns in
-    (collect_block_insns block) @ 
-    (List.map (fun (_, blk) -> collect_block_insns blk) lbled_blocks |> List.flatten)
-  in
-  
-  let insns_layout = List.mapi (fun i uid ->
-    (uid, Ind3 (Lit (Int64.of_int (-8 * (num_args + i + 1))), Rbp))
-  ) insn_uids in
-  
-  args_layout @ insns_layout
+  let all_uids = args @ (List.map fst block.insns) @ 
+                 (List.concat_map (fun (_, b) -> List.map fst b.insns) lbled_blocks) in
+  let unique_uids = List.sort_uniq compare all_uids in
+  List.mapi (fun i uid -> (uid, Ind3 (Lit (Int64.of_int (-8 * (i + 1))), Rbp))) unique_uids
 
 (* The code for the entry-point of a function must do several things:
 
@@ -483,31 +487,32 @@ let stack_layout (args : uid list) ((block, lbled_blocks):cfg) : layout =
 let compile_fdecl (tdecls:(tid * ty) list) (name:string) ({ f_ty; f_param; f_cfg }:fdecl) : prog =
   let layout = stack_layout f_param f_cfg in
   let ctxt = { tdecls; layout } in
-  
-  let stack_size = 8 * List.length layout in
-  
+
   (* Prologue *)
+  let num_locals = List.length layout in
+  let stack_size = if num_locals mod 2 <> 0 then 8 * (num_locals + 1) else 8 * num_locals in
   let prologue = [
     (Pushq, [Reg Rbp]);
     (Movq, [Reg Rsp; Reg Rbp]);
     (Subq, [Imm (Lit (Int64.of_int stack_size)); Reg Rsp])
   ] in
-  
+
   (* Move arguments to stack slots *)
-  let move_args = List.mapi (fun i arg ->
-    let src = arg_loc i in
-    let dst = lookup layout arg in
-    [(Movq, [src; Reg Rax]); (Movq, [Reg Rax; dst])]
-  ) f_param |> List.flatten in
-  
-  (* Compile blocks *)
-  let (entry_block, labeled_blocks) = f_cfg in
-  let entry_code = compile_block name ctxt entry_block in
-  let labeled_code = List.map (fun (lbl, blk) -> 
+  let arg_setup =
+    List.mapi (fun i uid -> 
+      (Movq, [arg_loc i; lookup layout uid])
+    ) f_param
+  in
+
+  (* Compile CFG *)
+  let entry_block, labeled_blocks = f_cfg in
+  let entry_block_insns = compile_block name ctxt entry_block in
+  let labeled_block_elems = List.map (fun (lbl, blk) -> 
     compile_lbl_block name lbl ctxt blk
   ) labeled_blocks in
-  
-  [Asm.gtext (Platform.mangle name) (prologue @ move_args @ entry_code)] @ labeled_code
+
+  let main_fn_body = prologue @ arg_setup @ entry_block_insns in
+  [Asm.gtext (Platform.mangle name) main_fn_body] @ labeled_block_elems
 
 
 
