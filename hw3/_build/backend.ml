@@ -501,15 +501,23 @@ let compile_fdecl (tdecls:(tid * ty) list) (name:string) ({ f_ty; f_param; f_cfg
 
   (* Move arguments to stack slots *)
   let arg_setup =
-    List.mapi (fun i uid -> 
-      (Movq, [arg_loc i; lookup layout uid])
+    List.flatten @@ List.mapi (fun i uid ->
+      let src_op = arg_loc i in
+      let dest_op = lookup layout uid in
+      match src_op with
+      | Reg _ -> (* Reg -> Mem is a single valid instruction *)
+          [(Movq, [src_op; dest_op])]
+      | Ind3 (_, _) -> (* Mem -> Mem is invalid, so use %rax as an intermediate *)
+          [(Movq, [src_op; Reg Rax]);
+           (Movq, [Reg Rax; dest_op])]
+      | _ -> failwith "arg_loc returned an unexpected operand type"
     ) f_param
   in
 
   (* Compile CFG *)
   let entry_block, labeled_blocks = f_cfg in
   let entry_block_insns = compile_block name ctxt entry_block in
-  let labeled_block_elems = List.map (fun (lbl, blk) -> 
+  let labeled_block_elems = List.map (fun (lbl, blk) ->
     compile_lbl_block name lbl ctxt blk
   ) labeled_blocks in
 
