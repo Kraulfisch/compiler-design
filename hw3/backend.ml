@@ -130,8 +130,7 @@ let compile_call (ctxt:ctxt) (uid:uid) (op:Ll.operand) (args:(ty * Ll.operand) l
         if i < 6 then acc
         else
           let (_, arg_op) = List.nth args i in
-          push_from (i - 1) (compile_operand ctxt (Reg Rax) arg_op :: (Pushq, [Reg Rax]) :: acc)
-      in
+            push_from (i - 1) (acc @ [compile_operand ctxt (Reg Rax) arg_op; (Pushq, [Reg Rax])])      in
       push_from (num_args - 1) []
     else []
   in
@@ -348,8 +347,8 @@ let compile_insn (ctxt:ctxt) ((uid:uid), (i:Ll.insn)) : X86.ins list =
       [compile_operand ctxt (Reg Rax) op1;
        compile_operand ctxt (Reg Rcx) op2;
        (Cmpq, [Reg Rcx; Reg Rax]);
-       (Set (compile_cnd cnd), [Reg Rax]);
-       (Movq, [Reg Rax; Reg Rax]);
+       (Set (compile_cnd cnd), [Reg Rax]);  (* This correctly prints 'set... %al' due to your existing X86.ml printer *)
+       (Andq, [Imm (Lit 1L); Reg Rax]);     (* Zero-extend by clearing upper bits *)
        (Movq, [Reg Rax; dest_op])]
        
   | Alloca _ ->
