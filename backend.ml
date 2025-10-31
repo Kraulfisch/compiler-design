@@ -1,3 +1,8 @@
+(* USAGE OF AI:
+  We used AI to help with syntax of Ocaml,
+  explain and clarify methods and tasks and brainstorming for ideas
+*)
+
 (* ll ir compilation -------------------------------------------------------- *)
 
 open Ll
@@ -141,7 +146,7 @@ let compile_call (ctxt:ctxt) (dst_operand: X86.operand) (op: Ll.operand) (args: 
     else []
   in
 
-  
+
   (* let push_stack_args =
     if num_stack_args = 0 then []
     else
