@@ -169,6 +169,17 @@ exp:
 vdecl:
   | VAR id=IDENT EQ init=exp { (id, init) }
 
+vdecls:
+  | v=separated_list(COMMA, vdecl) { v }
+
+exp_opt:
+  | (* empty *) { None }
+  | e=exp { Some e }
+
+stmt_opt:
+  | (* empty *) { None }
+  | s=stmt { Some s }
+
 stmt: 
   | d=vdecl SEMI
     { loc $startpos $endpos @@ Decl(d) }
@@ -183,8 +194,12 @@ stmt:
     { loc $startpos $endpos @@ Ret(Some e) }
   | WHILE LPAREN e=exp RPAREN b=block
     { loc $startpos $endpos @@ While(e, b) }
-  | FOR LPAREN VAR id=IDENT EQ init=exp SEMI cond=option(exp) SEMI update=option(stmt) trail=option(SEMI) RPAREN b=block
-    { loc $startpos $endpos @@ For([(id, init)], cond, update, b)}
+  | FOR LPAREN v=vdecls SEMI e=exp_opt SEMI s=stmt_opt RPAREN b=block
+                    { loc $startpos $endpos @@ For(v, e, s, b) }
+  // | FOR LPAREN v_dec=vdecl SEMI cond=option(exp) SEMI update=option(stmt) RPAREN b=block
+  //   { loc $startpos $endpos @@ For ([v_dec], cond, update, b)}
+  // | FOR LPAREN VAR id=IDENT EQ init=exp SEMI cond=option(exp) SEMI update=option(stmt) trail=option(SEMI) RPAREN b=block
+  //   { loc $startpos $endpos @@ For([(id, init)], cond, update, b)}
   // | FOR LPAREN var_decls=separated_nonempty_list(COMMA, vdecl) SEMI cond=option(exp) SEMI update=option(stmt) trail=option(SEMI) RPAREN b=block
   //   { loc $startpos $endpos @@ For(var_decls, cond, update, b) }
 
