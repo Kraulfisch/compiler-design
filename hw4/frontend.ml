@@ -129,6 +129,13 @@ let typ_of_unop : Ast.unop -> Ast.ty * Ast.ty = function
   | Neg | Bitnot -> (TInt, TInt)
   | Lognot       -> (TBool, TBool)
 
+let typ_of_glbl_expr : Ast.exp -> Ast.ty = function
+  | CNull -> 
+  | CBool -> TBool
+  | CInt  -> TInt
+  | CStr _ -> RString
+  | CArr  -> 
+
 (* Compiler Invariants
 
    The LLVM IR type of a variable (whether global or local) that stores an Oat
@@ -270,7 +277,7 @@ let gensym : string -> string =
   let c = ref 0 in
   fun (s:string) -> incr c; Printf.sprintf "_%s%d" s (!c)
 
-(* Amount of space an Oat type takes when stored in the satck, in bytes.  
+(* Amount of space an Oat type takes when stored in the stack, in bytes.  
    Note that since structured values are manipulated by reference, all
    Oat values take 8 bytes on the stack.
 *)
@@ -366,7 +373,21 @@ let cmp_function_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
    in well-formed programs. (The constructors starting with C). 
 *)
 let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
-  failwith "cmp_global_ctxt not implemented"
+
+  (* extract id from program *)
+  let ids = List.mapi (fun i decl ->
+    (match decl with
+    | Gvdecl gdecl -> (*gdecl here is acutally a node of a gdecl*)
+                      gdecl.elt.name
+    | Gfdecl fdecl ->
+                      fdecl.elt.fname
+    )
+  ) prog in
+
+  (* bind the value *)
+
+  (* Add every id and binding to the context*)
+  Ctxt.add (context) (id) (binding)
 
 (* Compile a function declaration in global context c. Return the LLVMlite cfg
    and a list of global declarations containing the string literals appearing
