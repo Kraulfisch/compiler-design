@@ -115,6 +115,7 @@ ty:
 
 %inline rtyp:
   // | TSTRING { RString }
+  | t=ty LBRACKET RBRACKET { RArray t}
   | LPAREN args=separated_list(COMMA, ty) RPAREN RET ret=ret_ty { RFun (args, ret) }
 
 %inline bop:
@@ -146,7 +147,7 @@ lhs:
     { loc $startpos $endpos @@ Index (e, i) }
 
 exp:
-  | NULL { loc $startpos $endpos @@ CNull RString }
+  | t=rtyp NULL { loc $startpos $endpos @@ CNull t }
   | i=INT { loc $startpos $endpos @@ CInt i }
   | TRUE { loc $startpos $endpos @@ CBool true }
   | FALSE { loc $startpos $endpos @@ CBool false }
