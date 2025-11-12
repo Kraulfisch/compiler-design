@@ -270,7 +270,7 @@ let gensym : string -> string =
   let c = ref 0 in
   fun (s:string) -> incr c; Printf.sprintf "_%s%d" s (!c)
 
-(* Amount of space an Oat type takes when stored in the satck, in bytes.  
+(* Amount of space an Oat type takes when stored in the stack, in bytes.  
    Note that since structured values are manipulated by reference, all
    Oat values take 8 bytes on the stack.
 *)
@@ -359,6 +359,20 @@ let cmp_function_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
       | _ -> c
     ) c p 
 
+
+
+(* Get the LL type of an Ast.exp  *)
+let typ_of_glbl_expr (a:Ast.exp): Ll.ty =
+  match a with
+  | CNull _ -> Ptr I8
+  | CBool _ -> I1
+  | CInt _  -> I64
+  | CStr s  -> Array (String.length s + 1, I8) (* handle \0 byte at the end *)
+  | CArr (ty, elts) -> 
+      let ll_ty = cmp_ty ty in
+      Struct [I64; Array (List.length elts, ll_ty)]
+  | _ -> failwith "typ_of_glbl_expr: unsupported global initializer"
+
 (* Populate a context with bindings for global variables 
    mapping OAT identifiers to LLVMlite gids and their types.
 
@@ -366,7 +380,17 @@ let cmp_function_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
    in well-formed programs. (The constructors starting with C). 
 *)
 let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
-  failwith "cmp_global_ctxt not implemented"
+
+  List.fold_left (fun decl -> function
+    | Gvdecl g -> 
+      let id = g.elt.name in
+      let typ: Ll.ty = typ_of_glbl_expr g.elt.init.elt  in
+      (* bind the value *)
+      let bnd = (typ, Ll.Gid id) in
+      (* Add every id and binding to the context*)
+      Ctxt.add c id bnd
+    | _ -> c
+  ) c p
 
 (* Compile a function declaration in global context c. Return the LLVMlite cfg
    and a list of global declarations containing the string literals appearing
@@ -381,7 +405,54 @@ let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
  *)
 
 let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) list =
-  failwith "cmp_fdecl not implemented"
+  (* given a context and an AST function declaration, return a 
+     LL function declaration and a list of (gid, gdecl)
+  *)
+  (* Do NOT forget to do the 5 steps above!!! *)
+
+  let func = f.elt in
+  let function_return_type: Ast.ret_ty = func.frtyp in
+  let function_name: Ast.id = func.fname in
+  let function_args: (Ast.ty * Ast.id) list = func.args in
+  let function_body: Ast.block = func.body in
+
+  let ll_fty: Ll.fty = (List.map cmp_ty (List.map fst function_args), cmp_ret_ty function_return_type) in
+  let ll_f_param = List.map snd function_args in
+  let block: Ll.block = {insns= [];
+                         term=  ("", Br "")} in
+  let ll_cfg = (block,[]) (* create a cfg by building a stream and using cfg_of_stream *)
+
+    (* Note: lift takes a Ll.block.insns and returns a stream.*)
+    (* Idea: transform function body into a list of elt and 
+        then use cfg_of_stream to convert it into a Ll.cfg
+    *)
+    (* let entry_label = gensym "entry" in
+    let entry_block = L entry_label >:: lift (
+      List.mapi (fun i (arg_ty, arg_id) ->
+        let param_id = List.nth ll_f_param i in
+        let alloca_id = gensym ("alloca_" ^ arg_id) in
+        (* Allocate space for the parameter *)
+        let alloca_insn = Alloca arg_ty in
+        (* Store the parameter into the allocated space *)
+        let store_insn = Store (arg_ty, Id param_id, Id alloca_id) in
+        (* Add binding to context *)
+        let c = Ctxt.add c arg_id (arg_ty, Id alloca_id) in
+        (alloca_id, alloca_insn), ((), store_insn), c
+      ) function_args |> List.flatten |> List.split3 |> fun (allocas, stores, contexts) ->
+      let c' = List.fold_left (fun acc ctx -> ctx) c contexts in
+      let store_stream = lift stores in
+      let alloc_stream = lift allocas in
+      let body_c, body_stream = cmp_block c' (cmp_ret_ty function_return_type) function_body in
+      let full_stream = entry_block >@ alloc_stream >@ store_stream >@ body_stream in
+      cfg_of_stream full_stream
+    )  *)
+  in
+  
+  let ll_fdecl = { f_ty=ll_fty;f_param=ll_f_param;f_cfg=ll_cfg } in failwith "cmp_fdecl not implemented"
+  (* compute the list of gids to gdecls *)
+
+
+
 
 (* Compile a global initializer, returning the resulting LLVMlite global
    declaration, and a list of additional global declarations.
@@ -395,8 +466,46 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
      be an array of pointers to arrays emitted as additional global declarations.
 *)
 
+let bool_to_int64 (b:bool): int64 = if b then 1L else 0L
+
 let rec cmp_gexp c (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.gdecl) list =
-  failwith "cmp_gexp not implemented"
+  let exp = e.elt in
+  (* Why only certain types require additional gid info:
+      - CStr: need to emit the string literal as a global array of i8
+      - CArr: need to emit each element as a separate global if they are
+        reference types (pointers)
+  *)
+  (match exp with
+  | CNull n -> ((cmp_rty n, GNull), [])
+  | CBool b -> ((I1, GInt (bool_to_int64 b)), [])
+  | CInt i -> ((I64, GInt i), [])
+  (* Knowing that Oat strings are pointers to byte, translate them to 
+     LLVMlite where a string is an array of chars *)
+  | CStr s -> 
+      let gid = gensym "str" in
+      let str_ty = Array (String.length s + 1, I8) in
+      let gdecl = (str_ty, GString s) in
+      (* TODO: Do I need to bitcast already? *)
+      (* ((Ptr I8, GBitcast (Ptr str_ty, GGid gid, Ptr I8)), [(gid, gdecl)]) *)
+      (gdecl, [(gid, gdecl)]) 
+  | CArr _ -> failwith "TODO: Implement arrays in cmp_gexp"
+  (* | CArr (ty, expressions) ->
+      let n = List.length expressions in
+      let elem_ty = cmp_ty ty in
+      let arr_len = Int64.of_int (n) in
+      let gid = gensym "arr" in
+      let g_inits, g_decls = 
+        List.fold_right (fun e (inits, decls) ->
+            let g_init, decls' = cmp_gexp c e in
+            g_init :: inits, decls' @ decls
+          ) expressions ([], [])
+      in
+      let arr_ty = Struct [I64; Array (n, elem_ty)] in
+      let gdecl = (arr_ty, GArray ((I64, GInt arr_len) :: List.map (fun gi -> (elem_ty, gi)) g_inits)) in
+      ((Ptr (Struct [I64; Array (0, elem_ty)]), GBitcast (Ptr arr_ty, GGid gid, Ptr (Struct [I64; Array (0, elem_ty)]))), (gid, gdecl) :: g_decls) *)
+  | _ -> failwith "cmp_gexp: unsupported global initializer"
+  )
+
 
 (* Oat internals function context ------------------------------------------- *)
 let internals = [
