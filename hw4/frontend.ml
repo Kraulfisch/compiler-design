@@ -354,7 +354,7 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
     let lk = Ctxt.lookup_option id c in
     (match lk with
     | Some (Ptr ty, oprnd) ->
-      let load_id = gensym "laod_val" in
+      let load_id = gensym "load_val" in
       (ty, Id load_id, [I (load_id, Load (Ptr ty, oprnd))])
     | _ -> failwith "Looked up invalid id: cmp_exp ID"
     )
@@ -473,32 +473,75 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
 
   | For (vdecls, cond_opt, update_opt, body) ->
     (* Again, this is a scoping statement, save the outer context *)
-    (* let context_before = c in
-    let c', init_strm = 
-      List.fold_left (fun (c_acc, strm_acc) var_dec -> 
-        let vdecl = no_loc (Ast.Decl var_dec) in
-        let c_new, decl_strm = cmp_stmt c_acc rt vdecl in
-        (c_new, strm_acc >@ decl_strm)
-      ) (c, []) vdecls in
+    let context_before = c in
+    let c', init_strm = List.fold_left (fun (c_acc, strm_acc) var_dec -> 
+                                        let vdecl = no_loc (Ast.Decl var_dec) in
+                                        let c_new, decl_strm = cmp_stmt c_acc rt vdecl in
+                                        (c_new, strm_acc >@ decl_strm)
+                                      ) (c, []) vdecls in
     let update_strm = (match update_opt with
-    | Some(update) -> []
-    | _ -> []) in
-    let cond_strm = (match (cond_opt) with
-                    | Some(cond) -> cmp_exp c' cond (* while cond {body; update}*)
-                    | _ -> cmp_exp c' (no_loc (CBool true))  (* no condition = while true *)
-                    ) in  *)
-    (* let c'', body_strm = cmp_block c' rt body in *)
-    failwith "TODO: cmp_stmt: For"  
-
-    (* Finished body will be: init_stream; while (cond_strem) {body ;update_stream} *)
+                      | Some(update) -> []
+                      | _ -> []) in
+    let cond_ty, cond_oprnd, cond_strm = (match (cond_opt) with
+                                         | Some(cond) -> cmp_exp c' cond (* while cond {body; update}*)
+                                         | _ -> cmp_exp c' (no_loc (CBool true))  (* no condition = while true *)
+                                         ) in 
+    let c'', body_strm = cmp_block c' rt body in
+    (* Idea: use cmp_stmt while in order to write less *)
+    let while_stream = 
+      [T (Br (gensym "lpre")) 
+      ;L (gensym "lpre")] 
+      >@ (cond_strm) 
+      >@ [T (Cbr (cond_oprnd, gensym "lbody", gensym "lpost"))
+         ;L (gensym "lbody")] 
+      >@ body_strm 
+      >@ update_strm 
+      >@ [T (Br (gensym "lpre"))
+         ;L (gensym "lpost")]
+    in
+    (context_before, init_strm >@ while_stream)
+    (* Finished body is: init_stream; while (cond_strem) {body ;update_stream} *)
 
     (* Idea: translate for (init; cond; update) { body } into
         init;
         while (cond) { body }
     *)
-  | If _ -> failwith "Statement If"
-
-  | Assn _ -> failwith "Assigning"
+  | If (cond, then_branch, else_branch) -> 
+    let cond_ty, cond_oprnd, cond_strm = cmp_exp c cond in
+    (match cond_ty with
+    | I1 -> 
+        let c_then, then_strm = cmp_block c rt then_branch in
+        let c_else, else_strm = cmp_block c rt else_branch in
+        let l_then = gensym "lthen" in
+        let l_else = gensym "lelse" in
+        let l_after = gensym "lafter" in
+        let if_stream = cond_strm 
+                        >@ [T (Cbr (cond_oprnd, l_then, l_else))
+                           ;L (l_then)] 
+                        >@ then_strm 
+                        >@ [T (Br l_after)
+                           ;L (l_else)] 
+                        >@ else_strm 
+                        >@ [T (Br l_after)
+                           ;L (l_after)] 
+        in
+        (c, if_stream)
+    | _ -> failwith "Condition not a boolean: If - cmp_stmt"
+    )
+  | Assn (lhs, rhs) ->
+     (* rememer the two types of assignments: x = 1 and x[0] = 42 *)
+     (match lhs.elt with
+      | Id id ->
+        (match (Ctxt.lookup_option id c) with 
+        | Some (Ptr lhs_ty, ptr_op) ->
+          let rhs_ty, rhs_oprnd, rhs_strm = cmp_exp c rhs in
+          let assign_id = gensym "assign" in
+          (c, rhs_strm >@ [I (assign_id, Store (rhs_ty, rhs_oprnd, ptr_op))])
+        | Some _ -> failwith "Assign to non pointer!!"
+        | _ -> failwith ("Unbound id in assignment: " ^ id)
+        )
+      | Index (exp1, exp2) -> failwith "Index assign"
+        (* Case: x[0] = 42 *))
 
   | SCall _ -> failwith "Statement Call"
 
