@@ -307,6 +307,25 @@ let bool_to_int64 (b:bool): int64 = if b then 1L else 0L
 
 *)
 
+let ast_bop_to_ll_bop (bop:Ast.binop) (ty:Ll.ty) (op1:Ll.operand) (op2:Ll.operand): Ll.insn =
+  match bop with
+  | Add -> Binop (Ll.Add, ty, op1, op2)
+  | Sub -> Binop (Ll.Sub, ty, op1, op2)
+  | Mul -> Binop (Ll.Mul, ty, op1, op2)
+  | Shl -> Binop (Ll.Shl, ty, op1, op2)
+  | Shr -> Binop (Ll.Lshr, ty, op1, op2)
+  | Sar -> Binop (Ll.Ashr, ty, op1, op2)
+  | IAnd | And -> Binop (Ll.And, ty, op1, op2) (* TODO: How to support bitwise and/or? *)
+  | IOr | Or -> Binop (Ll.Or, ty, op1, op2)
+  | Eq -> Icmp (Ll.Eq, ty, op1, op2)
+  | Neq -> Icmp (Ll.Ne, ty, op1, op2)
+  | Lt -> Icmp (Ll.Slt, ty, op1, op2)
+  | Lte -> Icmp (Ll.Sle, ty, op1, op2)
+  | Gt -> Icmp (Ll.Sgt, ty, op1, op2)
+  | Gte -> Icmp (Ll.Sge, ty, op1, op2)
+
+
+
 let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
   match exp.elt with
   | CNull n -> (cmp_rty n, Null, [])
@@ -324,8 +343,31 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
   | Id id -> failwith "TODO: cmp_exp: ID"
   | Index (exp1, exp2) -> failwith "TODO: cmp_exp: Index"
   | Call (exp, ls) -> failwith "TODO: cmp_exp: Call"
-  | Bop (op, exp1, exp2) -> failwith "TODO: cmp_exp: Bop"
-  | Uop (op, exp) -> failwith "TODO: cmp_exp: Uop"
+
+  | Bop (bop, exp1, exp2) -> 
+    let expt1, op1, strm1 = cmp_exp c exp1 in
+    let expt2, op2, strm2 = cmp_exp c exp2 in
+    if expt1 <> expt2 then failwith "Invalid Binary Operation: Operands to dot match - cmp_exp Bop"
+    else (
+      let id = gensym "binop" in
+      let typ = expt1 in
+      let ret_strm = [I (id, ast_bop_to_ll_bop bop typ op1 op2)] in
+      (typ, Id id, strm1 >@ strm2 >@ ret_strm)
+    )
+
+
+  | Uop (op, exp) -> 
+
+    let typ, opnd, strm = cmp_exp c exp in
+    let id = gensym "unop" in
+    let ret_strm = [I (id, 
+      match op with
+      | Neg -> Binop (Ll.Sub, I64, Const 0L, opnd)
+      | Lognot -> Icmp (Ll.Eq, I1, opnd, Const 0L)
+      | Bitnot -> Binop (Ll.Xor, I64, opnd, Const (-1L))
+    )] in
+    (typ, Id id, strm >@ ret_strm)
+    
 
 (* Compile a statement in context c with return typ rt. Return a new context, 
    possibly extended with new local bindings, and the instruction stream
@@ -357,9 +399,12 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
 let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
   match stmt.elt with
   | Ret Some(exp_node) ->
-    let ty, oprnd, str = cmp_exp c exp_node in
+    let ty, oprnd, strm = cmp_exp c exp_node in
     (* TODO: handle edge cases!!*)
-    (c, [T (Ret (ty, Some (oprnd)))])
+    if ty = rt then (c, strm >@ [T (Ret (ty, Some (oprnd)))])
+    else (
+      failwith "Other cases in Return some value"
+    )
   | Ret _ -> 
     (match rt with
     | Void -> (c, [T (Ret (Void, None))])
