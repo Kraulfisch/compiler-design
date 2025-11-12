@@ -287,6 +287,9 @@ let oat_alloc_array (t:Ast.ty) (size:Ll.operand) : Ll.ty * operand * stream =
     [ arr_id, Call(arr_ty, Gid "oat_alloc_array", [I64, size])
     ; ans_id, Bitcast(arr_ty, Id arr_id, ans_ty) ]
 
+(* custom helpers: *)
+let bool_to_int64 (b:bool): int64 = if b then 1L else 0L
+    
 (* Compiles an expression exp in context c, outputting the Ll operand that will
    recieve the value of the expression, and the stream of instructions
    implementing the expression. 
@@ -305,7 +308,24 @@ let oat_alloc_array (t:Ast.ty) (size:Ll.operand) : Ll.ty * operand * stream =
 *)
 
 let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
-  failwith "cmp_exp not implemented"
+  match exp.elt with
+  | CNull n -> (cmp_rty n, Null, [])
+  | CBool b -> (I1, Const (bool_to_int64 b), [])
+  | CInt i -> (I64, Const i, [])
+  | CStr s -> 
+    (* watch out for hoisting use the G constructor! in the stream *)
+     let str_gid = gensym "string_hoist" in
+     let typ = Array ((String.length s) + 1, Ll.I8) in
+     let str_ginit = GString s in
+     let str_gdecl = (typ, str_ginit) in
+     (typ, Gid str_gid, [G (str_gid, str_gdecl)])
+  | CArr (ty, ls) -> failwith "TODO: cmp_exp: CArr"
+  | NewArr (ty, exp) -> failwith "TODO: cmp_exp: NewArr"
+  | Id id -> failwith "TODO: cmp_exp: ID"
+  | Index (exp1, exp2) -> failwith "TODO: cmp_exp: Index"
+  | Call (exp, ls) -> failwith "TODO: cmp_exp: Call"
+  | Bop (op, exp1, exp2) -> failwith "TODO: cmp_exp: Bop"
+  | Uop (op, exp) -> failwith "TODO: cmp_exp: Uop"
 
 (* Compile a statement in context c with return typ rt. Return a new context, 
    possibly extended with new local bindings, and the instruction stream
@@ -335,7 +355,17 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
  *)
 
 let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
-  failwith "cmp_stmt not implemented"
+  match stmt.elt with
+  | Ret Some(exp_node) ->
+    let ty, oprnd, str = cmp_exp c exp_node in
+    (* TODO: handle edge cases!!*)
+    (c, [T (Ret (ty, Some (oprnd)))])
+  | Ret _ -> 
+    (match rt with
+    | Void -> (c, [T (Ret (Void, None))])
+    | _ -> failwith "Must return void for None return - cmp_stmt"
+    )
+  | _ -> failwith "TODO: other statements: cmp_stmt"
 
 (* Compile a series of statements *)
 and cmp_block (c:Ctxt.t) (rt:Ll.ty) (stmts:Ast.block) : Ctxt.t * stream =
@@ -488,8 +518,6 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
    - OAT arrays are always handled via pointers. A global array of arrays will
      be an array of pointers to arrays emitted as additional global declarations.
 *)
-
-let bool_to_int64 (b:bool): int64 = if b then 1L else 0L
 
 let rec cmp_gexp c (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.gdecl) list =
   let exp = e.elt in
