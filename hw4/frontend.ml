@@ -340,7 +340,11 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
      let typ = Array ((String.length s) + 1, Ll.I8) in
      let str_ginit = GString s in
      let str_gdecl = (typ, str_ginit) in
-     (typ, Gid str_gid, [G (str_gid, str_gdecl)])
+     let str_ptr_id = gensym "str_ptr" in
+     (* idea: use getelemptr to transform array into pointer to chars*)
+     let gep_insn = Gep (Ptr typ, Gid str_gid, [Const 0L; Const 0L]) in
+     (Ptr I8, Id str_ptr_id, [G (str_gid, str_gdecl); I (str_ptr_id, gep_insn)])
+     (* (typ, Gid str_gid, [G (str_gid, str_gdecl)]) *)
   | CArr (ty, ls) -> failwith "TODO: cmp_exp: CArr"
   | NewArr (ty, exp) -> failwith "TODO: cmp_exp: NewArr"
 
@@ -596,7 +600,7 @@ let rec cmp_gexp c (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.gdecl) list =
         reference types (pointers)
   *)
   (match exp with
-  | CNull n -> ((cmp_rty n, GNull), [])
+  | CNull n -> ((Ptr (cmp_rty n), GNull), [])
   | CBool b -> ((I1, GInt (bool_to_int64 b)), [])
   | CInt i -> ((I64, GInt i), [])
   (* Knowing that Oat strings are pointers to byte, translate them to 
