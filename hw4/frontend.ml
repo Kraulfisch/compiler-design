@@ -365,13 +365,18 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
   | Bop (bop, exp1, exp2) -> 
     let expt1, op1, strm1 = cmp_exp c exp1 in
     let expt2, op2, strm2 = cmp_exp c exp2 in
-    if expt1 <> expt2 then failwith "Invalid Binary Operation: Operands do not match - cmp_exp Bop"
-    else (
-      let id = gensym "binop" in
-      let typ = expt1 in
-      let ret_strm = [I (id, ast_bop_to_ll_bop bop typ op1 op2)] in
-      (typ, Id id, strm1 >@ strm2 >@ ret_strm)
-    )
+    (* if expt1 <> expt2 then failwith "Invalid Binary Operation: Operands do not match - cmp_exp Bop" *)
+    let id = gensym "binop" in
+    let typ_ = typ_of_binop bop in
+    let typ = (match typ_ with
+    | (TInt, TInt, TInt) -> I64
+    | (TInt, TInt, TBool) -> I1
+    | (TBool, TBool, TBool) -> I1
+    | _ -> failwith "You are a magician - Bop - cmp_exp"
+    ) in
+    let ret_strm = strm1 >@ strm2 >@ [I (id, ast_bop_to_ll_bop bop typ op1 op2)] in
+    
+    (typ, Id id, ret_strm)
 
 
   | Uop (op, exp) -> 
@@ -438,7 +443,64 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
     (* Do not forget to add the binding to the context!! *)
     let c' = Ctxt.add c id (Ptr ty, Id id) in
     (c', strm >@ [E (id, Ll.Alloca ty)] >@ [I (id, Ll.Store (ty, oprnd, Id id))])
-  | _ -> failwith "TODO: other statements: cmp_stmt"
+  | While (exp_node, body) ->
+    (* This is a scoping statement, which means that the context needs to be 
+       saved before executing the body of the loop*)
+    let ty, cond_oprnd, cond_strm = cmp_exp c exp_node in
+    (match ty with
+    | I1 -> 
+            let context_before = c in
+            let c', body_strm = cmp_block c rt body in
+            (* See slides lecture 14 for reference *)
+            let l_before_loop = gensym "lpre" in
+            let l_loop_body = gensym "lbody" in
+            let l_after_loop = gensym "lpost" in
+            let while_stream = [
+                T (Br l_before_loop);
+                L (l_before_loop);
+              ] 
+              >@ cond_strm
+              (* TODO: potentially swap order of labels... slides have them reversed *)
+              >@ [T (Cbr (cond_oprnd, l_loop_body, l_after_loop))
+                 ;L (l_loop_body)]
+              >@ body_strm
+              >@ [T (Br l_before_loop)
+                 ;L (l_after_loop)] 
+            in
+            (context_before, while_stream)
+    | _ -> failwith "Cond not a boolean"
+    )
+
+  | For (vdecls, cond_opt, update_opt, body) ->
+    (* Again, this is a scoping statement, save the outer context *)
+    (* let context_before = c in
+    let c', init_strm = 
+      List.fold_left (fun (c_acc, strm_acc) var_dec -> 
+        let vdecl = no_loc (Ast.Decl var_dec) in
+        let c_new, decl_strm = cmp_stmt c_acc rt vdecl in
+        (c_new, strm_acc >@ decl_strm)
+      ) (c, []) vdecls in
+    let update_strm = (match update_opt with
+    | Some(update) -> []
+    | _ -> []) in
+    let cond_strm = (match (cond_opt) with
+                    | Some(cond) -> cmp_exp c' cond (* while cond {body; update}*)
+                    | _ -> cmp_exp c' (no_loc (CBool true))  (* no condition = while true *)
+                    ) in  *)
+    (* let c'', body_strm = cmp_block c' rt body in *)
+    failwith "TODO: cmp_stmt: For"  
+
+    (* Finished body will be: init_stream; while (cond_strem) {body ;update_stream} *)
+
+    (* Idea: translate for (init; cond; update) { body } into
+        init;
+        while (cond) { body }
+    *)
+  | If _ -> failwith "Statement If"
+
+  | Assn _ -> failwith "Assigning"
+
+  | SCall _ -> failwith "Statement Call"
 
 (* Compile a series of statements *)
 and cmp_block (c:Ctxt.t) (rt:Ll.ty) (stmts:Ast.block) : Ctxt.t * stream =
@@ -488,8 +550,8 @@ let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
     | Gvdecl g -> 
       let id = g.elt.name in
       let typ: Ll.ty = typ_of_glbl_expr g.elt.init.elt  in
-      (* bind the value *)
-      let bnd = (typ, Ll.Gid id) in
+      (* bind the value - note: globals are stored as pointers to their values *)
+      let bnd = (Ptr typ, Ll.Gid id) in
       (* Add every id and binding to the context*)
       Ctxt.add c id bnd
     | _ -> c
