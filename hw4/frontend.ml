@@ -72,6 +72,9 @@ module Ctxt = struct
   (* Lookup a binding in the context *)
   let lookup (id:Ast.id) (c:t) : Ll.ty * Ll.operand =
     List.assoc id c
+  
+  let lookup_option (id:Ast.id) (c:t) : (Ll.ty * Ll.operand) option =
+    try Some (lookup id c ) with _ -> None
 
   (* Lookup a function, fail otherwise *)
   let lookup_function (id:Ast.id) (c:t) : Ll.ty * Ll.operand =
@@ -340,14 +343,25 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
      (typ, Gid str_gid, [G (str_gid, str_gdecl)])
   | CArr (ty, ls) -> failwith "TODO: cmp_exp: CArr"
   | NewArr (ty, exp) -> failwith "TODO: cmp_exp: NewArr"
-  | Id id -> failwith "TODO: cmp_exp: ID"
+
+  | Id id ->
+    (* let ty, oprnd = Ctxt.lookup id c in
+    (ty, oprnd, [])  *)
+    let lk = Ctxt.lookup_option id c in
+    (match lk with
+    | Some (Ptr ty, oprnd) ->
+      let load_id = gensym "laod_val" in
+      (ty, Id load_id, [I (load_id, Load (Ptr ty, oprnd))])
+    | _ -> failwith "Looked up invalid id: cmp_exp ID"
+    )
+
   | Index (exp1, exp2) -> failwith "TODO: cmp_exp: Index"
   | Call (exp, ls) -> failwith "TODO: cmp_exp: Call"
 
   | Bop (bop, exp1, exp2) -> 
     let expt1, op1, strm1 = cmp_exp c exp1 in
     let expt2, op2, strm2 = cmp_exp c exp2 in
-    if expt1 <> expt2 then failwith "Invalid Binary Operation: Operands to dot match - cmp_exp Bop"
+    if expt1 <> expt2 then failwith "Invalid Binary Operation: Operands do not match - cmp_exp Bop"
     else (
       let id = gensym "binop" in
       let typ = expt1 in
@@ -357,9 +371,8 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
 
 
   | Uop (op, exp) -> 
-
     let typ, opnd, strm = cmp_exp c exp in
-    let id = gensym "unop" in
+    let id = gensym "uop" in
     let ret_strm = [I (id, 
       match op with
       | Neg -> Binop (Ll.Sub, I64, Const 0L, opnd)
@@ -403,13 +416,24 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
     (* TODO: handle edge cases!!*)
     if ty = rt then (c, strm >@ [T (Ret (ty, Some (oprnd)))])
     else (
-      failwith "Other cases in Return some value"
+      if ty = Ptr rt then
+        let id = gensym "loaded" in
+        ( c, strm 
+             >@ [I (id, Load (Ptr rt, oprnd))] 
+             >@ [T (Ret (rt, Some (Id id)))]
+        )
+      else failwith "Other cases in Return some value"
     )
   | Ret _ -> 
     (match rt with
     | Void -> (c, [T (Ret (Void, None))])
     | _ -> failwith "Must return void for None return - cmp_stmt"
     )
+  | Decl (id, exp_node) ->
+    let ty, oprnd, strm = cmp_exp c exp_node in
+    (* Do not forget to add the binding to the context!! *)
+    let c' = Ctxt.add c id (Ptr ty, Id id) in
+    (c', strm >@ [E (id, Ll.Alloca ty)] >@ [I (id, Ll.Store (ty, oprnd, Id id))])
   | _ -> failwith "TODO: other statements: cmp_stmt"
 
 (* Compile a series of statements *)
@@ -456,7 +480,7 @@ let typ_of_glbl_expr (a:Ast.exp): Ll.ty =
 *)
 let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
 
-  List.fold_left (fun decl -> function
+  List.fold_left (fun c -> function
     | Gvdecl g -> 
       let id = g.elt.name in
       let typ: Ll.ty = typ_of_glbl_expr g.elt.init.elt  in
@@ -485,11 +509,11 @@ let generate_function_code (f_types: Ll.fty) (f_params: Ll.uid list) (code: stre
     | I1 | I8 | I64 -> 
         let uid = gensym "func_uid" in
         let new_strm = code >@ [I (uid, Alloca f_type)] >@ [I (uid, Store (f_type, Id f_param, Id uid))] in
-        let c = Ctxt.add c f_param (Ptr f_type, Id uid) in
-          (c, new_strm)
+        let new_ctxt = Ctxt.add c f_param (Ptr f_type, Id uid) in
+          (new_ctxt, new_strm)
     | _ ->
-      let c = Ctxt.add c f_param (f_type, Id f_param) in
-        (c, strm)
+      let new_ctxt = Ctxt.add c f_param (f_type, Id f_param) in
+        (new_ctxt, strm)
     )
   ) (c, []) (fst f_types) f_params
 
