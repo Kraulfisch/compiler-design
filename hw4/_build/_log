@@ -76,18 +76,10 @@ menhir --ocamlc '/home/student/.opam/4.13.1/bin/ocamlc.opt -I /home/student/.opa
 # Target: frontend.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:frontend.cmo, file:frontend.ml, implem, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I /home/student/.opam/4.13.1/lib/num -I /home/student/.opam/4.13.1/lib/ocaml -I sharedtests -I x86 -I ll -I util -o frontend.cmo frontend.ml
 + /home/student/.opam/4.13.1/bin/ocamlc.opt -c -I /home/student/.opam/4.13.1/lib/num -I /home/student/.opam/4.13.1/lib/ocaml -I sharedtests -I x86 -I ll -I util -o frontend.cmo frontend.ml
-File "frontend.ml", line 415, characters 6-19:
-415 |   let function_name: Ast.id = func.fname in
+File "frontend.ml", line 433, characters 6-19:
+433 |   let function_name: Ast.id = func.fname in
             ^^^^^^^^^^^^^
 Warning 26 [unused-var]: unused variable function_name.
-File "frontend.ml", line 417, characters 6-19:
-417 |   let function_body: Ast.block = func.body in
-            ^^^^^^^^^^^^^
-Warning 26 [unused-var]: unused variable function_body.
-File "frontend.ml", line 451, characters 6-14:
-451 |   let ll_fdecl = { f_ty=ll_fty;f_param=ll_f_param;f_cfg=ll_cfg } in failwith "cmp_fdecl not implemented"
-            ^^^^^^^^
-Warning 26 [unused-var]: unused variable ll_fdecl.
 # Target: gradedtests.ml.depends, tags: { extension:ml, file:gradedtests.ml, ocaml, ocamldep, quiet }
 /home/student/.opam/4.13.1/bin/ocamldep.opt -modules gradedtests.ml > gradedtests.ml.depends # cached
 # Target: driver.cmo, tags: { byte, compile, extension:cmo, extension:ml, file:driver.cmo, file:driver.ml, implem, ocaml, quiet }
@@ -159,18 +151,10 @@ Warning 26 [unused-var]: unused variable ll_fdecl.
 # Target: frontend.cmx, tags: { compile, extension:cmx, extension:ml, file:frontend.cmx, file:frontend.ml, implem, native, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I /home/student/.opam/4.13.1/lib/num -I /home/student/.opam/4.13.1/lib/ocaml -I sharedtests -I x86 -I ll -I util -o frontend.cmx frontend.ml
 + /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I /home/student/.opam/4.13.1/lib/num -I /home/student/.opam/4.13.1/lib/ocaml -I sharedtests -I x86 -I ll -I util -o frontend.cmx frontend.ml
-File "frontend.ml", line 415, characters 6-19:
-415 |   let function_name: Ast.id = func.fname in
+File "frontend.ml", line 433, characters 6-19:
+433 |   let function_name: Ast.id = func.fname in
             ^^^^^^^^^^^^^
 Warning 26 [unused-var]: unused variable function_name.
-File "frontend.ml", line 417, characters 6-19:
-417 |   let function_body: Ast.block = func.body in
-            ^^^^^^^^^^^^^
-Warning 26 [unused-var]: unused variable function_body.
-File "frontend.ml", line 451, characters 6-14:
-451 |   let ll_fdecl = { f_ty=ll_fty;f_param=ll_f_param;f_cfg=ll_cfg } in failwith "cmp_fdecl not implemented"
-            ^^^^^^^^
-Warning 26 [unused-var]: unused variable ll_fdecl.
 # Target: driver.cmx, tags: { compile, extension:cmx, extension:ml, file:driver.cmx, file:driver.ml, implem, native, ocaml, quiet }
 /home/student/.opam/4.13.1/bin/ocamlopt.opt -c -I /home/student/.opam/4.13.1/lib/num -I /home/student/.opam/4.13.1/lib/ocaml -I sharedtests -I x86 -I ll -I util -o driver.cmx driver.ml
 # Target: progasts.cmx, tags: { compile, extension:cmx, extension:ml, file:progasts.cmx, file:progasts.ml, implem, native, ocaml, quiet }

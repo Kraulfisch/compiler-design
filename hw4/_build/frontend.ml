@@ -404,6 +404,24 @@ let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
    5. Use cfg_of_stream to produce a LLVMlite cfg from 
  *)
 
+let generate_function_code (f_types: Ll.fty) (f_params: Ll.uid list) (code: stream) (c:Ctxt.t): (Ctxt.t * stream) =
+   List.fold_left2 (fun (c, strm) f_type f_param -> 
+    (match f_type with
+    | I1 | I8 | I64 -> 
+        let uid = gensym "func_uid" in
+        let new_strm = code >@ [I (uid, Alloca f_type)] >@ [I (uid, Store (f_type, Id f_param, Id uid))] in
+        let c = Ctxt.add c f_param (Ptr f_type, Id uid) in
+          (c, new_strm)
+    | _ ->
+      let c = Ctxt.add c f_param (f_type, Id f_param) in
+        (c, strm)
+    )
+  ) (c, []) (fst f_types) f_params
+
+
+
+
+
 let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) list =
   (* given a context and an AST function declaration, return a 
      LL function declaration and a list of (gid, gdecl)
@@ -417,15 +435,20 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
   let function_body: Ast.block = func.body in
 
   let ll_fty: Ll.fty = (List.map cmp_ty (List.map fst function_args), cmp_ret_ty function_return_type) in
-  let ll_f_param = List.map snd function_args in
-  let block: Ll.block = {insns= [];
-                         term=  ("", Br "")} in
-  let ll_cfg = (block,[]) (* create a cfg by building a stream and using cfg_of_stream *)
+  let ll_f_param: Ll.uid list = List.map snd function_args in
+  let c, code = generate_function_code ll_fty ll_f_param [] c (* generate code and doing the 5 steps above!! *) in
+  let c, ll_body = cmp_block c (cmp_ret_ty function_return_type) function_body in
+  let cfg, some_list = cfg_of_stream (code @ ll_body) in
+  
+  (* create a cfg by building a stream and using cfg_of_stream *)
+
 
     (* Note: lift takes a Ll.block.insns and returns a stream.*)
-    (* Idea: transform function body into a list of elt and 
-        then use cfg_of_stream to convert it into a Ll.cfg
+    (* 
+      Idea: transform function body into a list of elt and 
+      then use cfg_of_stream to convert it into a Ll.cfg
     *)
+
     (* let entry_label = gensym "entry" in
     let entry_block = L entry_label >:: lift (
       List.mapi (fun i (arg_ty, arg_id) ->
@@ -446,10 +469,10 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
       let full_stream = entry_block >@ alloc_stream >@ store_stream >@ body_stream in
       cfg_of_stream full_stream
     )  *)
-  in
   
-  let ll_fdecl = { f_ty=ll_fty;f_param=ll_f_param;f_cfg=ll_cfg } in failwith "cmp_fdecl not implemented"
+  let ll_fdecl = { f_ty=ll_fty; f_param=ll_f_param; f_cfg=cfg } in
   (* compute the list of gids to gdecls *)
+    (ll_fdecl, some_list)
 
 
 
