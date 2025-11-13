@@ -388,9 +388,31 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
       (arr_ty, arr_op, size_strm >@ alloc_strm)
 
   | Id id ->
+    (match Ctxt.lookup_option id c with
+    | Some (ty, op) -> 
+      (match ty with
+      | Ptr (Ptr _) ->
+          (* Reference types (arrays, strings) stored in variables *)
+          (* Need to load once to get the pointer to the data *)
+          let load_uid = gensym "load_ref" in
+          (match ty with
+          | Ptr inner_ty -> (inner_ty, Id load_uid, [I (load_uid, Load (ty, op))])
+          | _ -> failwith "impossible")
+      | Ptr inner_ty ->
+          (* Value types (int, bool) stored in variables *)
+          (* Need to load to get the actual value *)
+          let load_uid = gensym "load_val" in
+          (inner_ty, Id load_uid, [I (load_uid, Load (ty, op))])
+      | _ -> 
+          (* Direct operands (like function parameters that are reference types) *)
+          (ty, op, [])
+      )
+    | None -> failwith ("unbound variable: " ^ id)
+    )
+
     (* let ty, oprnd = Ctxt.lookup id c in
     (ty, oprnd, [])  *)
-    (match Ctxt.lookup_option id c with
+    (* (match Ctxt.lookup_option id c with
     | Some (ty, op) -> 
       (match ty with
       | Ptr (Ptr inner_ty) ->
@@ -402,8 +424,7 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
       | _ -> (ty, Id (gensym ("unqe"^id)), []) (* return as is with custom name*)
       )
     | None -> failwith "unbound variable ID"
-      
-    )
+    ) *)
 
     (* let lk = Ctxt.lookup_option id c in
     (match lk with
@@ -435,8 +456,8 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
       )
     | (Ptr (Ptr (Struct _)), I64) -> failwith "still weird?"
     | _ -> 
-      print_stream arr_strm;
-      print_stream idx_strm;
+      (* print_stream arr_strm;
+      print_stream idx_strm; *)
       failwith "This is weird"
     )
   (* | Index (e1, e2) ->
@@ -600,10 +621,19 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
   | Decl (id, exp_node) ->
     let ty, oprnd, strm = cmp_exp c exp_node in
     let unique_id = gensym id in
+    (* For reference types (arrays, strings), we store a pointer to a pointer
+       For value types (int, bool), we store a pointer to the value *)
+    let alloc_ty = ty in  (* ty is already the correct type from cmp_exp *)
+    let c' = Ctxt.add c id (Ptr alloc_ty, Id unique_id) in
+    (c', strm 
+         >@ [E (unique_id, Ll.Alloca alloc_ty)] 
+         >@ [I (gensym "store", Ll.Store (alloc_ty, oprnd, Id unique_id))])
+    (* let ty, oprnd, strm = cmp_exp c exp_node in
+    let unique_id = gensym id in
     (* Do not forget to add the binding to the context!! *)
     let c' = Ctxt.add c id (Ptr ty, Id unique_id) in (* shadowing the global same name values*)
     (c', strm >@ [E (unique_id, Ll.Alloca ty)] 
-              >@ [I (unique_id, Ll.Store (ty, oprnd, Id unique_id))])
+              >@ [I (unique_id, Ll.Store (ty, oprnd, Id unique_id))]) *)
   | While (exp_node, body) ->
     (* This is a scoping statement, which means that the context needs to be 
        saved before executing the body of the loop*)
@@ -692,8 +722,39 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
     | _ -> failwith "Condition not a boolean: If - cmp_stmt"
     )
   | Assn (lhs, rhs) ->
+    (match lhs.elt with
+     | Id id ->
+       (match (Ctxt.lookup_option id c) with 
+       | Some (Ptr stored_ty, ptr_op) ->
+           let rhs_ty, rhs_oprnd, rhs_strm = cmp_exp c rhs in
+           if rhs_ty = stored_ty then
+               let store_insn = Store (rhs_ty, rhs_oprnd, ptr_op) in
+               (c, rhs_strm >@ [I (gensym "store", store_insn)])
+           else
+               failwith (Printf.sprintf "Assignment type mismatch: expected %s, got %s" 
+                        (Llutil.string_of_ty stored_ty) (Llutil.string_of_ty rhs_ty))
+       | Some _ -> failwith "Assign to non-pointer!!"
+       | _ -> failwith ("Unbound id in assignment: " ^ id)
+       )
+     | Index (exp1, exp2) ->
+         let arr_t, arr_op, arr_strm = cmp_exp c exp1 in
+         let idx_t, idx_op, idx_strm = cmp_exp c exp2 in
+         let rhs_ty, rhs_op, rhs_strm = cmp_exp c rhs in
+         (match arr_t with
+         | Ptr (Struct [_; Array (_, element_ty)]) ->
+           let ptr_id = gensym "assign_ptr" in
+           let store_id = gensym "assign_store" in
+           (c, arr_strm 
+               >@ idx_strm 
+               >@ rhs_strm
+               >@ [I (ptr_id, Gep (arr_t, arr_op, [Const 0L; Const 1L; idx_op]))]
+               >@ [I (store_id, Store (element_ty, rhs_op, Id ptr_id))])
+         | _ -> failwith "Assignment to non-array index"
+         )
+     | _ -> failwith "Invalid left-hand-side in assignment"
+    )
      (* rememer the two types of assignments: x = 1 and x[0] = 42 *)
-     (match lhs.elt with
+     (* (match lhs.elt with
       | Id id ->
         (match (Ctxt.lookup_option id c) with 
         | Some (Ptr stored_ty, ptr_op) -> (* stored_ty is the type pointed to by ptr_op *)
@@ -732,7 +793,7 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
        | _ -> failwith "Assignment to non-array index"
        )
       | _ -> failwith "Invalid left-hand-side in assignment"
-      )
+      ) *)
  
   | SCall (exp_node, exp_node_list) -> 
     (* Idea: resuse most of the Call exp to handle the SCall statement: *)
@@ -785,10 +846,10 @@ let rec typ_of_glbl_expr (a:Ast.exp): Ll.ty =
   | CNull t -> cmp_rty ( t)
   | CBool _ -> I1
   | CInt _  -> I64
-  | CStr s  -> Ptr (Array (String.length s + 1, I8)) (* handle \0 byte at the end *)
+  | CStr s  -> Array (String.length s + 1, I8) (* handle \0 byte at the end *)
   | CArr (ty, elts) -> 
     let el_ty = typ_of_glbl_expr (List.hd elts).elt in
-    Ll.Ptr (Ll.Struct [I64; Ll.Array(List.length elts, el_ty)])
+    (Ll.Struct [I64; Ll.Array(List.length elts, el_ty)])
       (* let ll_ty = cmp_ty ty in
       Ptr (Struct [I64; Array (List.length elts, ll_ty)]) *)
   | _ -> failwith "typ_of_glbl_expr: unsupported global initializer"
@@ -955,16 +1016,34 @@ let rec cmp_gexp c (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.gdecl) list =
       let str_ty = Array (String.length s + 1, I8) in
       let gdecl = (str_ty, GString s) in
       (* TODO: Do I need to bitcast already? *)
-      (* ((Ptr I8, GBitcast (Ptr str_ty, GGid gid, Ptr I8)), [(gid, gdecl)]) *)
-      (gdecl, [(gid, gdecl)]) 
+      ((Ptr I8, GBitcast (Ptr str_ty, GGid gid, Ptr I8)), [(gid, gdecl)])
+      (* (gdecl, [(gid, gdecl)])  *)
   | CArr (ty, expressions) -> 
+
+    let n = List.length expressions in
+    let element_ty = cmp_ty ty in
+    let array_ty = Struct [I64; Array (n, element_ty)] in
+    
+    let arr_decl = (I64, GInt (Int64.of_int n)) in
+    let arr_list, additional_gdecls = 
+      List.fold_right (fun exp_node (ginits, gdecls_acc) ->
+        let gdecl, additional_gdecls = cmp_gexp c exp_node in
+        match gdecl with
+        | (ty, ginit) -> (ginit :: ginits, additional_gdecls @ gdecls_acc)
+      ) expressions ([], [])
+    in
+    let type_list = List.map (fun _ -> element_ty) expressions in
+    let arr_elems = (Array (n, element_ty), GArray (List.combine type_list arr_list)) in
+    let ginit = GStruct ([arr_decl; arr_elems]) in
+    let gdecl = (array_ty, ginit) in
+    (gdecl, additional_gdecls)
 
     (* OAT arrays are always handled via pointers. A global array of arrays will
      be an array of pointers to arrays emitted as additional global declarations. *)
     
      (* Global initialized arrays are allocated at compile time, 
      while those local to a function must be allocated at run time, on the heap *)
-
+(* 
     let n = List.length expressions in
     (* The plan: initialize an empty array of type ty and then populate it with 
      the constants found in the expressions list*)
@@ -999,7 +1078,7 @@ let rec cmp_gexp c (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.gdecl) list =
     (* let ginit = GStruct ([ (I64, GInt (Int64.of_int n)) ] @
                           List.map ()  *)
     let gdecl = (array_ty, ginit) in
-    (gdecl, [])
+    (gdecl, []) *)
     (* (gdecl, (gid, gdecl) :: additional_gdecls)   *)
 
 
