@@ -343,8 +343,8 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
      let str_ptr_id = gensym "str_ptr" in
      (* idea: use getelemptr to transform array into pointer to chars*)
      let gep_insn = Gep (Ptr typ, Gid str_gid, [Const 0L; Const 0L]) in
-     (Ptr I8, Id str_ptr_id, [G (str_gid, str_gdecl)] >@ [I (str_ptr_id, gep_insn)])
-       (* (typ, Gid str_gid, [G (str_gid, str_gdecl)]) *)
+     (Ptr I8, Id str_ptr_id, [G (str_gid, str_gdecl); I (str_ptr_id, gep_insn)])
+     (* (typ, Gid str_gid, [G (str_gid, str_gdecl)]) *)
      
   | CArr (ty, ls) -> 
     (* Allocate array and initialize with the given elements *)
@@ -463,8 +463,8 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
     | (TBool, TBool, TBool) -> I1
     | _ -> failwith "You are a magician - Bop - cmp_exp"
     ) in
-    let ret_strm = strm1 >@ strm2 >@ [I (id, ast_bop_to_ll_bop bop typ op1 op2)] in
-    
+    let ret_strm = strm1 >@ strm2 >@ [I (id, ast_bop_to_ll_bop bop expt1 op1 op2)] in
+  
     (typ, Id id, ret_strm)
 
 
@@ -809,16 +809,13 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
 
   let c_with_params, init_stream = generate_function_code ll_fty ll_f_param [] c_fresh (* generate code and doing the 5 steps above!! *) in
   let c_body, ll_body = cmp_block c_with_params (ll_frty) function_body in
-  let full_stream = init_stream >@ ll_body 
-                     >@ (match cmp_ret_ty function_return_type with
+  let full_stream = init_stream >@ ll_body in
+                     (* >@ (match cmp_ret_ty function_return_type with
                         | Void -> [T (Ret (Void, None))]
-                        | _ -> [])  in
+                        | _ -> [])  in *)
   (* print_stream full_stream; *)
   let cfg, some_list = cfg_of_stream full_stream in
-  
-
   (* create a cfg by building a stream and using cfg_of_stream *)
-
 
     (* Note: lift takes a Ll.block.insns and returns a stream.*)
     (* 
