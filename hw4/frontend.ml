@@ -343,11 +343,30 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
      let str_ptr_id = gensym "str_ptr" in
      (* idea: use getelemptr to transform array into pointer to chars*)
      let gep_insn = Gep (Ptr typ, Gid str_gid, [Const 0L; Const 0L]) in
-     (Ptr I8, Id str_ptr_id, [G (str_gid, str_gdecl); I (str_ptr_id, gep_insn)])
-     (* (typ, Gid str_gid, [G (str_gid, str_gdecl)]) *)
+     (Ptr I8, Id str_ptr_id, [G (str_gid, str_gdecl)] >@ [I (str_ptr_id, gep_insn)])
+       (* (typ, Gid str_gid, [G (str_gid, str_gdecl)]) *)
      
-  | CArr (ty, ls) -> failwith "TODO: cmp_exp: CArr"
-  | NewArr (ty, exp) -> failwith "TODO: cmp_exp: NewArr"
+  | CArr (ty, ls) -> 
+    (* Allocate array and initialize with the given elements *)
+    let n = List.length ls in
+    let arr_ty, arr_op, alloc_strm = oat_alloc_array ty (Const (Int64.of_int n)) in
+    (* Compile each element expression and store it in the array *)
+    let element_ty = cmp_ty ty in
+    let init_strm = List.mapi (fun i exp_node ->
+      let exp_ty, exp_op, exp_strm = cmp_exp c exp_node in
+      let ptr_id = gensym "arr_init_ptr" in
+      let store_id = gensym "arr_init_store" in
+      exp_strm 
+      >@ [I (ptr_id, Gep (arr_ty, arr_op, [Const 0L; Const 1L; Const (Int64.of_int i)]))]
+      >@ [I (store_id, Store (element_ty, exp_op, Id ptr_id))]
+    ) ls |> List.fold_left (>@) [] in
+    (arr_ty, arr_op, alloc_strm >@ init_strm)
+
+| NewArr (ty, exp) -> 
+    let size_ty, size_op, size_strm = cmp_exp c exp in
+    (* Allocate the array using the nice helper function *)
+    let arr_ty, arr_op, alloc_strm = oat_alloc_array ty size_op in
+    (arr_ty, arr_op, size_strm >@ alloc_strm)
 
   | Id id ->
     (* let ty, oprnd = Ctxt.lookup id c in
@@ -365,7 +384,34 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
     | _ -> failwith "Looked up invalid id: cmp_exp ID"
     )
 
-  | Index (exp1, exp2) -> 
+
+  | Index (exp1, exp2) -> failwith "cmp_exp Index: not implemented"
+    (* exp1[exp2] - compile as lhs then load *)
+    (* let arr_t, arr_op, arr_strm = cmp_exp c exp1 in
+    let idx_t, idx_op, idx_strm = cmp_exp c exp2 in
+    (match (arr_t, idx_t) with
+    | (Ptr (Struct [_; Array (_, element_ty)]), I64) -> 
+      let ptr_id = gensym "index_ptr" in
+      let load_id = gensym "index_load" in
+      (element_ty, Id load_id,
+       arr_strm 
+       >@ idx_strm 
+       >@ [I (ptr_id, Gep (arr_t, arr_op, [Const 0L; Const 1L; idx_op]))]
+       >@ [I (load_id, Load (Ptr element_ty, Id ptr_id))]
+      )
+      (* handle global arrays; *)
+    | (Struct [_; Array (_, element_ty)], I64) -> 
+        let ptr_id = gensym "gindex_ptr" in
+        let load_id = gensym "gindex_load" in
+        (element_ty, Id load_id,
+         arr_strm 
+         >@ idx_strm
+         >@ [ I (ptr_id, Gep (Ptr arr_t, arr_op, [Const 0L; Const 1L; idx_op])) ;
+              I (load_id, Load (Ptr element_ty, Id ptr_id)) ]
+        )
+    | _ -> failwith "Index: expected array type and i64 index"
+    ) *)
+  (* | Index (exp1, exp2) -> 
     (* exp1[exp2] -> exp1 must be array, exp2 a number *)
     let arr_t, arr_op, arr_strm = cmp_exp c exp1 in
     let idx_t, idx_op, idx_strm = cmp_exp c exp2 in
@@ -384,7 +430,7 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
        >@ [I (id, Gep (arr_t, arr_op, [Const 0L; idx_op]))]
       )
     | _ -> failwith "Did not index an array with a number"
-    )
+    ) *)
 
 
   | Call (exp, exp_ls) ->
@@ -467,15 +513,15 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
     let ty, oprnd, strm = cmp_exp c exp_node in
     (* TODO: handle edge cases!!*)
     if ty = rt then (c, strm >@ [T (Ret (ty, Some (oprnd)))])
-    else (
-      if ty = Ptr rt then
+
+    else if ty = Ptr rt then
         let id = gensym "loaded" in
         ( c, strm 
              >@ [I (id, Load (Ptr rt, oprnd))] 
              >@ [T (Ret (rt, Some (Id id)))]
         )
-      else failwith "Other cases in Return some value"
-    )
+    else failwith "Other cases in Return some value"
+    
   | Ret _ -> 
     (match rt with
     | Void -> (c, [T (Ret (Void, None))])
@@ -498,17 +544,16 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
             let l_before_loop = gensym "lpre" in
             let l_loop_body = gensym "lbody" in
             let l_after_loop = gensym "lpost" in
-            let while_stream = [
-                T (Br l_before_loop);
-                L (l_before_loop);
-              ] 
+            let while_stream = 
+              [T (Br l_before_loop)]
+              >@ [L (l_before_loop)] 
               >@ cond_strm
               (* TODO: potentially swap order of labels... slides have them reversed *)
-              >@ [T (Cbr (cond_oprnd, l_loop_body, l_after_loop))
-                 ;L (l_loop_body)]
+              >@ [T (Cbr (cond_oprnd, l_loop_body, l_after_loop))]
+              >@ [L (l_loop_body)]
               >@ body_strm
-              >@ [T (Br l_before_loop)
-                 ;L (l_after_loop)] 
+              >@ [T (Br l_before_loop)]
+              >@ [L (l_after_loop)] 
             in
             (context_before, while_stream)
     | _ -> failwith "Cond not a boolean"
@@ -523,7 +568,7 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
                                         (c_new, strm_acc >@ decl_strm)
                                       ) (c, []) vdecls in
     let update_strm = (match update_opt with
-                      | Some(update) -> []
+                      | Some(update) -> let _, s = cmp_stmt c' rt update in s
                       | _ -> []) in
     let cond_ty, cond_oprnd, cond_strm = (match (cond_opt) with
                                          | Some(cond) -> cmp_exp c' cond (* while cond {body; update}*)
@@ -535,15 +580,15 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
     let l_body = gensym "lbody" in
     let l_post = gensym "lpost" in
     let while_stream = 
-      [T (Br (l_pre)) 
-      ;L (l_pre)] 
+      [T (Br (l_pre))]
+      >@ [L (l_pre)] 
       >@ (cond_strm) 
-      >@ [T (Cbr (cond_oprnd, l_body, l_post))
-         ;L (l_body)] 
+      >@ [T (Cbr (cond_oprnd, l_body, l_post))]
+      >@ [L (l_body)] 
       >@ body_strm 
       >@ update_strm 
-      >@ [T (Br (l_pre))
-         ;L (l_post)]
+      >@ [T (Br (l_pre))]
+      >@ [L (l_post)]
     in
     (context_before, init_strm >@ while_stream)
     (* Finished body is: init_stream; while (cond_strem) {body ;update_stream} *)
@@ -562,14 +607,14 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
         let l_else = gensym "lelse" in
         let l_after = gensym "lafter" in
         let if_stream = cond_strm 
-                        >@ [T (Cbr (cond_oprnd, l_then, l_else))
-                           ;L (l_then)] 
+                        >@ [T (Cbr (cond_oprnd, l_then, l_else))]
+                        >@ [L (l_then)]
                         >@ then_strm 
-                        >@ [T (Br l_after)
-                           ;L (l_else)] 
+                        >@ [T (Br l_after)]
+                        >@ [L (l_else)] 
                         >@ else_strm 
-                        >@ [T (Br l_after)
-                           ;L (l_after)] 
+                        >@ [T (Br l_after)]
+                        >@ [L (l_after)] 
         in
         (c, if_stream)
     | _ -> failwith "Condition not a boolean: If - cmp_stmt"
@@ -586,8 +631,24 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
         | Some _ -> failwith "Assign to non pointer!!"
         | _ -> failwith ("Unbound id in assignment: " ^ id)
         )
-      | Index (exp1, exp2) -> failwith "Index assign"
-        (* Case: x[0] = 42 *))
+      | Index (exp1, exp2) -> (* Case: x[0] = 42 *)
+          (* Compile the array and index *)
+       let arr_t, arr_op, arr_strm = cmp_exp c exp1 in
+       let idx_t, idx_op, idx_strm = cmp_exp c exp2 in
+       let rhs_ty, rhs_op, rhs_strm = cmp_exp c rhs in
+       (match arr_t with
+       | Ptr (Struct [_; Array (_, element_ty)]) ->
+         let ptr_id = gensym "assign_ptr" in
+         let store_id = gensym "assign_store" in
+         (c, arr_strm 
+             >@ idx_strm 
+             >@ rhs_strm
+             >@ [I (ptr_id, Gep (arr_t, arr_op, [Const 0L; Const 1L; idx_op]))]
+             >@ [I (store_id, Store (element_ty, rhs_op, Id ptr_id))])
+       | _ -> failwith "Assignment to non-array index"
+       )
+      | _ -> failwith "Invalid left-hand-side in assignment"
+      )
 
   | SCall (exp_node, exp_node_list) -> 
     (* Idea: resuse most of the Call exp to handle the SCall statement: *)
@@ -697,22 +758,34 @@ let generate_function_code (f_types: Ll.fty) (f_params: Ll.uid list) (code: stre
     ) (c, [], []) arg_tys f_params
   in
   (c', allocs_stream >@ stores_stream >@ code) *)
-   List.fold_left2 (fun (c, strm) f_type f_param -> 
+  let arg_tys = fst f_types in
+  List.fold_left2 (fun (c_acc, strm_acc) f_type f_param -> 
     (match f_type with
     | I1 | I8 | I64 -> 
         let uid = gensym "func_uid" in
         let store_uid = gensym "store_param" in
-        let new_ctxt = Ctxt.add c f_param (Ptr f_type, Id uid) in
-        let new_strm = strm >@ code >@ [E (uid, Alloca f_type)] >@ [I (store_uid, Store (f_type, Id f_param, Id uid))] in
-          (new_ctxt, new_strm)
+        let new_ctxt = Ctxt.add c_acc f_param (Ptr f_type, Id uid) in
+        let new_strm = strm_acc >@ [E (uid, Alloca f_type)] >@ [I (store_uid, Store (f_type, Id f_param, Id uid))] in
+        (new_ctxt, new_strm)
     | _ ->
-      let new_ctxt = Ctxt.add c f_param (f_type, Id f_param) in
-        (new_ctxt, strm)
+        let new_ctxt = Ctxt.add c_acc f_param (f_type, Id f_param) in
+        (new_ctxt, strm_acc)
     )
-  ) (c, []) (fst f_types) (f_params)
+  ) (c, code) arg_tys f_params
 
 
+let string_of_elt e =
+  match e with
+  | L l -> "\n" ^ l ^ ":"
+  | I (u, i) -> "  " ^ u ^ " = " ^ Llutil.string_of_insn i
+  | T t -> "  " ^ Llutil.string_of_terminator t
+  | G (g, _) -> "GLOBAL: " ^ g
+  | E (u, i) -> "ENTRY: " ^ u ^ " = " ^ Llutil.string_of_insn i
 
+let print_stream (s:stream) =
+  print_endline "--- STREAM ---";
+  List.iter (fun e -> print_endline (string_of_elt e)) (List.rev s);
+  print_endline "--------------"
 
 
 let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) list =
@@ -726,17 +799,24 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
   let function_name: Ast.id = func.fname in
   let function_args: (Ast.ty * Ast.id) list = func.args in
   let function_body: Ast.block = func.body in
+  let ll_frty = cmp_ret_ty function_return_type in
 
   let ll_fty: Ll.fty = (List.map cmp_ty (List.map fst function_args), cmp_ret_ty function_return_type) in
   let ll_f_param: Ll.uid list = List.map snd function_args in
 
   let c_fresh = c in 
 
+
   let c_with_params, init_stream = generate_function_code ll_fty ll_f_param [] c_fresh (* generate code and doing the 5 steps above!! *) in
-  let c_body, ll_body = cmp_block c_with_params (cmp_ret_ty function_return_type) function_body in
-  let full_stream = init_stream >@ ll_body in
+  let c_body, ll_body = cmp_block c_with_params (ll_frty) function_body in
+  let full_stream = init_stream >@ ll_body 
+                     >@ (match cmp_ret_ty function_return_type with
+                        | Void -> [T (Ret (Void, None))]
+                        | _ -> [])  in
+  (* print_stream full_stream; *)
   let cfg, some_list = cfg_of_stream full_stream in
   
+
   (* create a cfg by building a stream and using cfg_of_stream *)
 
 
