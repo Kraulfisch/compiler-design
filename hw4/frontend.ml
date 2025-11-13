@@ -782,15 +782,11 @@ let cmp_function_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
 (* Get the LL type of an Ast.exp  *)
 let rec typ_of_glbl_expr (a:Ast.exp): Ll.ty =
   match a with
-  | CNull t -> cmp_rty ( t)
+  | CNull t -> cmp_ty (TRef t)  (* FIX: Use cmp_ty to get Ptr *)
   | CBool _ -> I1
   | CInt _  -> I64
   | CStr s  -> Ptr I8
-  | CArr (ty, elts) -> 
-    let el_ty = cmp_ty ty in
-    Ptr (Struct [I64; Array(0, el_ty)])
-      (* let ll_ty = cmp_ty ty in
-      Ptr (Struct [I64; Array (List.length elts, ll_ty)]) *)
+  | CArr (ty, elts) -> cmp_ty (TRef (RArray ty))
   | _ -> failwith "typ_of_glbl_expr: unsupported global initializer"
 
 (* Populate a context with bindings for global variables 
