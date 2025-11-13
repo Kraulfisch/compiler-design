@@ -1,3 +1,7 @@
+(* 
+Use of AI: We used genAI for debugging and finding errors regarding 
+the types of of certain values (Ptr Ptr instead of Ptr Struct etc.)
+*)
 open Ll
 open Llutil
 open Ast
