@@ -353,14 +353,56 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
     (ty, oprnd, [])  *)
     let lk = Ctxt.lookup_option id c in
     (match lk with
+    | Some (Ptr (Array (n, ty)), oprnd) ->
+      (* Use Gep to load the actual array pointer *)
+      let arr_ptr_id = gensym "array_ptr" in
+      let gep_insn = Gep (Ptr (Array (n, ty)), oprnd, [Const 0L; Const 0L]) in
+      (Ptr ty, Id arr_ptr_id, [I (arr_ptr_id, gep_insn)])
     | Some (Ptr ty, oprnd) ->
       let load_id = gensym "load_val" in
       (ty, Id load_id, [I (load_id, Load (Ptr ty, oprnd))])
     | _ -> failwith "Looked up invalid id: cmp_exp ID"
     )
 
-  | Index (exp1, exp2) -> failwith "TODO: cmp_exp: Index"
-  | Call (exp, ls) -> failwith "TODO: cmp_exp: Call"
+  | Index (exp1, exp2) -> 
+    (* exp1[exp2] -> exp1 must be array, exp2 a number *)
+    let arr_t, arr_op, arr_strm = cmp_exp c exp1 in
+    let idx_t, idx_op, idx_strm = cmp_exp c exp2 in
+    (match (arr_t, idx_t) with
+    | (Ptr (Struct _), I64) -> 
+      let Ptr (Struct types) = arr_t in 
+      let arr_el_ty = List.hd types in
+      let id = gensym "indexing" in
+      (* Remember the GEP... first index over the pointer second index over the field:
+        see: https://releases.llvm.org/21.1.0/docs/GetElementPtr.html
+      *)
+      (arr_el_ty, Id id,
+       arr_strm 
+       >@ idx_strm 
+       (* TODO: FIX THIS GEP INSTRUCTION!!! *)
+       >@ [I (id, Gep (arr_t, arr_op, [Const 0L; idx_op]))]
+      )
+    | _ -> failwith "Did not index an array with a number"
+    )
+
+
+  | Call (exp, exp_ls) ->
+    let func_t, func_op = Ctxt.lookup_function (match exp.elt with
+      | Id id -> id
+      | _ -> failwith "Function call must be an identifier - cmp_exp Call"
+    ) c in
+    (match func_t with
+    | Ptr (Fun (arg_tys, ret_ty))
+    | Fun (arg_tys, ret_ty) -> 
+      let arg_ops_strms = List.map (cmp_exp c) exp_ls in
+      let arg_ops = List.map (fun (_, op, _) -> op) arg_ops_strms in
+      let arg_strms = List.fold_left (fun acc (_, _, strm) -> acc >@ strm) [] arg_ops_strms in
+      let call_id = gensym "call" in
+      (ret_ty, Id call_id,
+       arg_strms
+       >@ [I (call_id, Call (ret_ty, func_op, List.combine arg_tys arg_ops))])
+    | _ -> failwith "Called a non-function - cmp_exp Call"
+    )
 
   | Bop (bop, exp1, exp2) -> 
     let expt1, op1, strm1 = cmp_exp c exp1 in
@@ -543,7 +585,26 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
       | Index (exp1, exp2) -> failwith "Index assign"
         (* Case: x[0] = 42 *))
 
-  | SCall _ -> failwith "Statement Call"
+  | SCall (exp_node, exp_node_list) -> 
+    (* Idea: resuse most of the Call exp to handle the SCall statement: *)
+    let func_t, func_op = Ctxt.lookup_function (match exp_node.elt with
+      | Id id -> id
+      | _ -> failwith "Function call must be an identifier - cmp_exp Call"
+    ) c in
+    (match func_t with
+    | Ptr (Fun (arg_tys, ret_ty))
+    | Fun (arg_tys, ret_ty) -> 
+      let arg_ops_strms = List.map (cmp_exp c) exp_node_list in
+      let arg_ops = List.map (fun (_, op, _) -> op) arg_ops_strms in
+      let arg_strms = List.fold_left (fun acc (_, _, strm) -> acc >@ strm) [] arg_ops_strms in
+      let call_id = gensym "scall" in
+      (c,
+       arg_strms
+       >@ [I (call_id, Call (ret_ty, func_op, List.combine arg_tys arg_ops))])
+    | _ -> failwith "Called a non-function - cmp_exp Call"
+    )
+
+    
 
 (* Compile a series of statements *)
 and cmp_block (c:Ctxt.t) (rt:Ll.ty) (stmts:Ast.block) : Ctxt.t * stream =
@@ -613,7 +674,26 @@ let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
  *)
 
 let generate_function_code (f_types: Ll.fty) (f_params: Ll.uid list) (code: stream) (c:Ctxt.t): (Ctxt.t * stream) =
-   List.fold_left2 (fun (c, strm) f_type f_param -> 
+  let arg_tys = fst f_types in
+  let (c', entry_es_rev, ins_rev) =
+    List.fold_left2 (fun (c_acc, es_acc, ins_acc) f_type f_param ->
+      match f_type with
+      | I1 | I8 | I64 ->
+          let alloca_uid = gensym "func_uid" in
+          let store_uid  = gensym "store_param" in
+          let c_new = Ctxt.add c_acc f_param (Ptr f_type, Id alloca_uid) in
+          (c_new,
+           (E (alloca_uid, Alloca f_type)) :: es_acc,
+           (I (store_uid, Store (f_type, Id f_param, Id alloca_uid))) :: ins_acc)
+      | _ ->
+          let c_new = Ctxt.add c_acc f_param (f_type, Id f_param) in
+          (c_new, es_acc, ins_acc)
+    ) (c, [], []) arg_tys f_params
+  in
+  let entry_es = List.rev entry_es_rev in
+  let insns    = List.rev ins_rev in
+  (c', entry_es @ insns @ code)
+   (* List.fold_left2 (fun (c, strm) f_type f_param -> 
     (match f_type with
     | I1 | I8 | I64 -> 
         let uid = gensym "func_uid" in
@@ -625,7 +705,7 @@ let generate_function_code (f_types: Ll.fty) (f_params: Ll.uid list) (code: stre
       let new_ctxt = Ctxt.add c f_param (f_type, Id f_param) in
         (new_ctxt, strm)
     )
-  ) (c, []) (fst f_types) f_params
+  ) (c, []) (fst f_types) f_params *)
 
 
 
@@ -647,7 +727,7 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
   let ll_f_param: Ll.uid list = List.map snd function_args in
   let c, code = generate_function_code ll_fty ll_f_param [] c (* generate code and doing the 5 steps above!! *) in
   let c, ll_body = cmp_block c (cmp_ret_ty function_return_type) function_body in
-  let cfg, some_list = cfg_of_stream (code @ ll_body) in
+  let cfg, some_list = cfg_of_stream (code >@ ll_body) in
   
   (* create a cfg by building a stream and using cfg_of_stream *)
 
