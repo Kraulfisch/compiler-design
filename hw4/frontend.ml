@@ -617,8 +617,9 @@ let generate_function_code (f_types: Ll.fty) (f_params: Ll.uid list) (code: stre
     (match f_type with
     | I1 | I8 | I64 -> 
         let uid = gensym "func_uid" in
-        let new_strm = code >@ [I (uid, Alloca f_type)] >@ [I (uid, Store (f_type, Id f_param, Id uid))] in
+        let store_uid = gensym "store_param" in
         let new_ctxt = Ctxt.add c f_param (Ptr f_type, Id uid) in
+        let new_strm = code >@ [E (uid, Alloca f_type)] >@ [I (store_uid, Store (f_type, Id f_param, Id uid))] in
           (new_ctxt, new_strm)
     | _ ->
       let new_ctxt = Ctxt.add c f_param (f_type, Id f_param) in
