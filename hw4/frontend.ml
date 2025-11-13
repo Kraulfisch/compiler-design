@@ -292,7 +292,22 @@ let oat_alloc_array (t:Ast.ty) (size:Ll.operand) : Ll.ty * operand * stream =
 
 (* custom helpers: *)
 let bool_to_int64 (b:bool): int64 = if b then 1L else 0L
-    
+
+
+let string_of_elt e =
+  match e with
+  | L l -> "\n" ^ l ^ ":"
+  | I (u, i) -> "  " ^ u ^ " = " ^ Llutil.string_of_insn i
+  | T t -> "  " ^ Llutil.string_of_terminator t
+  | G (g, _) -> "GLOBAL: " ^ g
+  | E (u, i) -> "ENTRY: " ^ u ^ " = " ^ Llutil.string_of_insn i
+
+let print_stream (s:stream) =
+  print_endline "--- STREAM ---";
+  List.iter (fun e -> print_endline (string_of_elt e)) (List.rev s);
+  print_endline "--------------"
+
+
 (* Compiles an expression exp in context c, outputting the Ll operand that will
    recieve the value of the expression, and the stream of instructions
    implementing the expression. 
@@ -375,7 +390,22 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
   | Id id ->
     (* let ty, oprnd = Ctxt.lookup id c in
     (ty, oprnd, [])  *)
-    let lk = Ctxt.lookup_option id c in
+    (match Ctxt.lookup_option id c with
+    | Some (ty, op) -> 
+      (match ty with
+      | Ptr (Ptr inner_ty) ->
+        let load_uid = gensym "load_ref" in
+        (Ptr inner_ty, Id load_uid, [I (load_uid, Load (ty, op))])
+      | Ptr inner_ty ->
+        let load_uid = gensym "load_val" in
+        (inner_ty, Id load_uid, [I (load_uid, Load (ty, op))])
+      | _ -> (ty, Id (gensym ("unqe"^id)), []) (* return as is with custom name*)
+      )
+    | None -> failwith "unbound variable ID"
+      
+    )
+
+    (* let lk = Ctxt.lookup_option id c in
     (match lk with
     | Some (Ptr (Array (n, ty)), oprnd) ->
       (* Use Gep to load the actual array pointer *)
@@ -386,7 +416,7 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
       let load_id = gensym "load_val" in
       (ty, Id load_id, [I (load_id, Load (Ptr ty, oprnd))])
     | _ -> failwith "Looked up invalid id: cmp_exp ID"
-    )
+    ) *)
 
   | Index (exp1, exp2) -> 
 
@@ -403,7 +433,11 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
         >@ [I (ptr_id, Gep (arr_t, arr_op, [Const 0L; Const 1L; idx_op]))]
         >@ [I (load_id, Load (Ptr element_ty, Id ptr_id))]
       )
-    | _ -> failwith "This is weird"
+    | (Ptr (Ptr (Struct _)), I64) -> failwith "still weird?"
+    | _ -> 
+      print_stream arr_strm;
+      print_stream idx_strm;
+      failwith "This is weird"
     )
   (* | Index (e1, e2) ->
     let arr_t, arr_op, arr_strm = cmp_exp c e1 in 
@@ -537,6 +571,12 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
 
  *)
 
+let cmp_lhs (c:Ctxt.t) (id:Ast.id) : Ll.ty * Ll.operand * stream =
+  let lk = Ctxt.lookup_option id c in
+  match lk  with
+  | Some (ty, op) -> (ty, op, [])
+  | None -> failwith ("unbound variable in assignment: " ^ id)
+
 let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
   match stmt.elt with
   | Ret Some(exp_node) ->
@@ -559,10 +599,11 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
     )
   | Decl (id, exp_node) ->
     let ty, oprnd, strm = cmp_exp c exp_node in
-    let unique_id = gensym ("unique" ^ id) in
+    let unique_id = gensym id in
     (* Do not forget to add the binding to the context!! *)
-    let c' = Ctxt.add c id (Ptr ty, Id unique_id) in
-    (c', strm >@ [E (unique_id, Ll.Alloca ty)] >@ [I (unique_id, Ll.Store (ty, oprnd, Id unique_id))])
+    let c' = Ctxt.add c id (Ptr ty, Id unique_id) in (* shadowing the global same name values*)
+    (c', strm >@ [E (unique_id, Ll.Alloca ty)] 
+              >@ [I (unique_id, Ll.Store (ty, oprnd, Id unique_id))])
   | While (exp_node, body) ->
     (* This is a scoping statement, which means that the context needs to be 
        saved before executing the body of the loop*)
@@ -655,13 +696,25 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
      (match lhs.elt with
       | Id id ->
         (match (Ctxt.lookup_option id c) with 
+        | Some (Ptr stored_ty, ptr_op) -> (* stored_ty is the type pointed to by ptr_op *)
+            let rhs_ty, rhs_oprnd, rhs_strm = cmp_exp c rhs in
+              if rhs_ty = stored_ty then
+                  let store_insn = Store (rhs_ty, rhs_oprnd, ptr_op) in
+                  (c, rhs_strm >@ [I (gensym "store", store_insn)])
+              else
+                  failwith "Assignment type mismatch: RHS value type does not match LHS storage type"
+                
+        | Some _ -> failwith "Assign to non-pointer!!"
+        | _ -> failwith ("Unbound id in assignment: " ^ id)
+        )
+        (* (match (Ctxt.lookup_option id c) with 
         | Some (Ptr lhs_ty, ptr_op) ->
           let rhs_ty, rhs_oprnd, rhs_strm = cmp_exp c rhs in
           let assign_id = gensym "assign" in
           (c, rhs_strm >@ [I (assign_id, Store (rhs_ty, rhs_oprnd, ptr_op))])
         | Some _ -> failwith "Assign to non pointer!!"
         | _ -> failwith ("Unbound id in assignment: " ^ id)
-        )
+        ) *)
       | Index (exp1, exp2) -> (* Case: x[0] = 42 *)
           (* Compile the array and index *)
        let arr_t, arr_op, arr_strm = cmp_exp c exp1 in
@@ -727,15 +780,17 @@ let cmp_function_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
 
 
 (* Get the LL type of an Ast.exp  *)
-let typ_of_glbl_expr (a:Ast.exp): Ll.ty =
+let rec typ_of_glbl_expr (a:Ast.exp): Ll.ty =
   match a with
-  | CNull _ -> Ptr I8
+  | CNull t -> cmp_rty ( t)
   | CBool _ -> I1
   | CInt _  -> I64
-  | CStr s  -> Array (String.length s + 1, I8) (* handle \0 byte at the end *)
+  | CStr s  -> Ptr (Array (String.length s + 1, I8)) (* handle \0 byte at the end *)
   | CArr (ty, elts) -> 
-      let ll_ty = cmp_ty ty in
-      Struct [I64; Array (List.length elts, ll_ty)]
+    let el_ty = typ_of_glbl_expr (List.hd elts).elt in
+    Ll.Ptr (Ll.Struct [I64; Ll.Array(List.length elts, el_ty)])
+      (* let ll_ty = cmp_ty ty in
+      Ptr (Struct [I64; Array (List.length elts, ll_ty)]) *)
   | _ -> failwith "typ_of_glbl_expr: unsupported global initializer"
 
 (* Populate a context with bindings for global variables 
@@ -803,20 +858,6 @@ let generate_function_code (f_types: Ll.fty) (f_params: Ll.uid list) (code: stre
         (new_ctxt, strm_acc)
     )
   ) (c, code) arg_tys f_params
-
-
-let string_of_elt e =
-  match e with
-  | L l -> "\n" ^ l ^ ":"
-  | I (u, i) -> "  " ^ u ^ " = " ^ Llutil.string_of_insn i
-  | T t -> "  " ^ Llutil.string_of_terminator t
-  | G (g, _) -> "GLOBAL: " ^ g
-  | E (u, i) -> "ENTRY: " ^ u ^ " = " ^ Llutil.string_of_insn i
-
-let print_stream (s:stream) =
-  print_endline "--- STREAM ---";
-  List.iter (fun e -> print_endline (string_of_elt e)) (List.rev s);
-  print_endline "--------------"
 
 
 let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) list =
