@@ -345,6 +345,7 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
      let gep_insn = Gep (Ptr typ, Gid str_gid, [Const 0L; Const 0L]) in
      (Ptr I8, Id str_ptr_id, [G (str_gid, str_gdecl); I (str_ptr_id, gep_insn)])
      (* (typ, Gid str_gid, [G (str_gid, str_gdecl)]) *)
+     
   | CArr (ty, ls) -> failwith "TODO: cmp_exp: CArr"
   | NewArr (ty, exp) -> failwith "TODO: cmp_exp: NewArr"
 
@@ -530,16 +531,19 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
                                          ) in 
     let c'', body_strm = cmp_block c' rt body in
     (* Idea: use cmp_stmt while in order to write less *)
+    let l_pre = gensym "lpre" in
+    let l_body = gensym "lbody" in
+    let l_post = gensym "lpost" in
     let while_stream = 
-      [T (Br (gensym "lpre")) 
-      ;L (gensym "lpre")] 
+      [T (Br (l_pre)) 
+      ;L (l_pre)] 
       >@ (cond_strm) 
-      >@ [T (Cbr (cond_oprnd, gensym "lbody", gensym "lpost"))
-         ;L (gensym "lbody")] 
+      >@ [T (Cbr (cond_oprnd, l_body, l_post))
+         ;L (l_body)] 
       >@ body_strm 
       >@ update_strm 
-      >@ [T (Br (gensym "lpre"))
-         ;L (gensym "lpost")]
+      >@ [T (Br (l_pre))
+         ;L (l_post)]
     in
     (context_before, init_strm >@ while_stream)
     (* Finished body is: init_stream; while (cond_strem) {body ;update_stream} *)
@@ -674,38 +678,38 @@ let cmp_global_ctxt (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
  *)
 
 let generate_function_code (f_types: Ll.fty) (f_params: Ll.uid list) (code: stream) (c:Ctxt.t): (Ctxt.t * stream) =
-  let arg_tys = fst f_types in
-  let (c', entry_es_rev, ins_rev) =
-    List.fold_left2 (fun (c_acc, es_acc, ins_acc) f_type f_param ->
+  (* let arg_tys = fst f_types in
+  let (c', allocs_stream, stores_stream) =
+    List.fold_left2 (fun (c_acc, allocs_acc, stores_acc) f_type f_param ->
       match f_type with
       | I1 | I8 | I64 ->
           let alloca_uid = gensym "func_uid" in
           let store_uid  = gensym "store_param" in
           let c_new = Ctxt.add c_acc f_param (Ptr f_type, Id alloca_uid) in
+          let alloc_elt = [E (alloca_uid, Alloca f_type)] in
+          let store_elt = [I (store_uid, Store (f_type, Id f_param, Id alloca_uid))] in
           (c_new,
-           (E (alloca_uid, Alloca f_type)) :: es_acc,
-           (I (store_uid, Store (f_type, Id f_param, Id alloca_uid))) :: ins_acc)
+           allocs_acc >@ alloc_elt,
+           stores_acc >@ store_elt)
       | _ ->
           let c_new = Ctxt.add c_acc f_param (f_type, Id f_param) in
-          (c_new, es_acc, ins_acc)
+          (c_new, allocs_acc, stores_acc)
     ) (c, [], []) arg_tys f_params
   in
-  let entry_es = List.rev entry_es_rev in
-  let insns    = List.rev ins_rev in
-  (c', entry_es @ insns @ code)
-   (* List.fold_left2 (fun (c, strm) f_type f_param -> 
+  (c', allocs_stream >@ stores_stream >@ code) *)
+   List.fold_left2 (fun (c, strm) f_type f_param -> 
     (match f_type with
     | I1 | I8 | I64 -> 
         let uid = gensym "func_uid" in
         let store_uid = gensym "store_param" in
         let new_ctxt = Ctxt.add c f_param (Ptr f_type, Id uid) in
-        let new_strm = code >@ [E (uid, Alloca f_type)] >@ [I (store_uid, Store (f_type, Id f_param, Id uid))] in
+        let new_strm = strm >@ code >@ [E (uid, Alloca f_type)] >@ [I (store_uid, Store (f_type, Id f_param, Id uid))] in
           (new_ctxt, new_strm)
     | _ ->
       let new_ctxt = Ctxt.add c f_param (f_type, Id f_param) in
         (new_ctxt, strm)
     )
-  ) (c, []) (fst f_types) f_params *)
+  ) (c, []) (fst f_types) (f_params)
 
 
 
@@ -725,9 +729,13 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
 
   let ll_fty: Ll.fty = (List.map cmp_ty (List.map fst function_args), cmp_ret_ty function_return_type) in
   let ll_f_param: Ll.uid list = List.map snd function_args in
-  let c, code = generate_function_code ll_fty ll_f_param [] c (* generate code and doing the 5 steps above!! *) in
-  let c, ll_body = cmp_block c (cmp_ret_ty function_return_type) function_body in
-  let cfg, some_list = cfg_of_stream (code >@ ll_body) in
+
+  let c_fresh = c in 
+
+  let c_with_params, init_stream = generate_function_code ll_fty ll_f_param [] c_fresh (* generate code and doing the 5 steps above!! *) in
+  let c_body, ll_body = cmp_block c_with_params (cmp_ret_ty function_return_type) function_body in
+  let full_stream = init_stream >@ ll_body in
+  let cfg, some_list = cfg_of_stream full_stream in
   
   (* create a cfg by building a stream and using cfg_of_stream *)
 
@@ -792,27 +800,58 @@ let rec cmp_gexp c (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.gdecl) list =
   (* Knowing that Oat strings are pointers to byte, translate them to 
      LLVMlite where a string is an array of chars *)
   | CStr s -> 
-      let gid = gensym "str" in
+      let gid = gensym "global_str" in
       let str_ty = Array (String.length s + 1, I8) in
       let gdecl = (str_ty, GString s) in
       (* TODO: Do I need to bitcast already? *)
       (* ((Ptr I8, GBitcast (Ptr str_ty, GGid gid, Ptr I8)), [(gid, gdecl)]) *)
       (gdecl, [(gid, gdecl)]) 
-  | CArr _ -> failwith "TODO: Implement arrays in cmp_gexp"
-  (* | CArr (ty, expressions) ->
-      let n = List.length expressions in
-      let elem_ty = cmp_ty ty in
-      let arr_len = Int64.of_int (n) in
-      let gid = gensym "arr" in
-      let g_inits, g_decls = 
-        List.fold_right (fun e (inits, decls) ->
-            let g_init, decls' = cmp_gexp c e in
-            g_init :: inits, decls' @ decls
-          ) expressions ([], [])
-      in
-      let arr_ty = Struct [I64; Array (n, elem_ty)] in
-      let gdecl = (arr_ty, GArray ((I64, GInt arr_len) :: List.map (fun gi -> (elem_ty, gi)) g_inits)) in
-      ((Ptr (Struct [I64; Array (0, elem_ty)]), GBitcast (Ptr arr_ty, GGid gid, Ptr (Struct [I64; Array (0, elem_ty)]))), (gid, gdecl) :: g_decls) *)
+  | CArr (ty, expressions) -> 
+
+    (* OAT arrays are always handled via pointers. A global array of arrays will
+     be an array of pointers to arrays emitted as additional global declarations. *)
+    
+     (* Global initialized arrays are allocated at compile time, 
+     while those local to a function must be allocated at run time, on the heap *)
+
+    let n = List.length expressions in
+    (* The plan: initialize an empty array of type ty and then populate it with 
+     the constants found in the expressions list*)
+    let element_ty = cmp_ty ty in
+    let array_ty = Struct [I64; Array (n, element_ty)] in
+    (* How do I initialize a constant array at compile time? *)
+    (* compare to globals4.oat:
+    global arr = new int[]{1, 2, 3, 4};
+    int program(int argc, string[] args) {
+      return 5;
+    }
+        *)
+        (* Like this: *)
+    (* let ginit = GStruct ([  (I64, GInt (Int64.of_int n));
+                            (Array (n, element_ty),
+                             GArray [(I64, GInt 1L);
+                                     (I64, GInt 2L);
+                                     (I64, GInt 3L);
+                                     (I64, GInt 4L);
+                                    ]
+                            )
+                          ]) in *)
+    let arr_decl = (I64, GInt (Int64.of_int n)) in
+    let arr_list = List.map (fun exp_node ->
+                        let gdecl, additional_gdecls = cmp_gexp c exp_node in
+                        match gdecl with
+                        | (ty, ginit) -> ginit
+                      ) expressions in
+    let type_list = List.map (fun exp -> element_ty) expressions in
+    let arr_elems = (Array (n, element_ty), GArray (List.combine type_list arr_list)) in
+    let ginit = GStruct ([arr_decl; arr_elems]) in
+    (* let ginit = GStruct ([ (I64, GInt (Int64.of_int n)) ] @
+                          List.map ()  *)
+    let gdecl = (array_ty, ginit) in
+    (gdecl, [])
+    (* (gdecl, (gid, gdecl) :: additional_gdecls)   *)
+
+
   | _ -> failwith "cmp_gexp: unsupported global initializer"
   )
 
