@@ -327,7 +327,11 @@ let ast_bop_to_ll_bop (bop:Ast.binop) (ty:Ll.ty) (op1:Ll.operand) (op2:Ll.operan
   | Gt -> Icmp (Ll.Sgt, ty, op1, op2)
   | Gte -> Icmp (Ll.Sge, ty, op1, op2)
 
-
+let rec get_arr_el_t (t:Ll.ty) : Ll.ty =
+  match t with
+  | Ll.Struct (_::[Ll.Array(_, typ)]) -> typ
+  | Ll.Ptr (Ll.Struct (_::[Ll.Array(_, typ)])) -> typ
+  | _ -> t
 
 let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
   match exp.elt with
@@ -362,11 +366,11 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
     ) ls |> List.fold_left (>@) [] in
     (arr_ty, arr_op, alloc_strm >@ init_strm)
 
-| NewArr (ty, exp) -> 
-    let size_ty, size_op, size_strm = cmp_exp c exp in
-    (* Allocate the array using the nice helper function *)
-    let arr_ty, arr_op, alloc_strm = oat_alloc_array ty size_op in
-    (arr_ty, arr_op, size_strm >@ alloc_strm)
+  | NewArr (ty, exp) -> 
+      let size_ty, size_op, size_strm = cmp_exp c exp in
+      (* Allocate the array using the nice helper function *)
+      let arr_ty, arr_op, alloc_strm = oat_alloc_array ty size_op in
+      (arr_ty, arr_op, size_strm >@ alloc_strm)
 
   | Id id ->
     (* let ty, oprnd = Ctxt.lookup id c in
@@ -384,29 +388,55 @@ let rec cmp_exp (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.operand * stream =
     | _ -> failwith "Looked up invalid id: cmp_exp ID"
     )
 
+  | Index (exp1, exp2) -> 
 
-  | Index (exp1, exp2) -> failwith "cmp_exp Index: not implemented"
     (* exp1[exp2] - compile as lhs then load *)
-    (* let arr_t, arr_op, arr_strm = cmp_exp c exp1 in
+    let arr_t, arr_op, arr_strm = cmp_exp c exp1 in
     let idx_t, idx_op, idx_strm = cmp_exp c exp2 in
     (match (arr_t, idx_t) with
     | (Ptr (Struct [_; Array (_, element_ty)]), I64) -> 
       let ptr_id = gensym "index_ptr" in
       let load_id = gensym "index_load" in
       (element_ty, Id load_id,
-       arr_strm 
-       >@ idx_strm 
-       >@ [I (ptr_id, Gep (arr_t, arr_op, [Const 0L; Const 1L; idx_op]))]
-       >@ [I (load_id, Load (Ptr element_ty, Id ptr_id))]
+        arr_strm 
+        >@ idx_strm 
+        >@ [I (ptr_id, Gep (arr_t, arr_op, [Const 0L; Const 1L; idx_op]))]
+        >@ [I (load_id, Load (Ptr element_ty, Id ptr_id))]
+      )
+    | _ -> failwith "This is weird"
+    )
+  (* | Index (e1, e2) ->
+    let arr_t, arr_op, arr_strm = cmp_exp c e1 in 
+    let arr_el_t = get_arr_el_t arr_t in
+    let idx_t, idx_op, idx_strm = cmp_exp c e2 in 
+    let id = gensym "gep" in 
+    (* let id2 = gensym "load_gep" in *)
+    (Ll.Ptr arr_el_t, Ll.Id id, arr_strm 
+      >@ idx_strm 
+      >@ [I (id, Ll.Gep (arr_t, arr_op, [Ll.Const 0L; Ll.Const 1L; idx_op]))]) *)
+
+  (* | Index (exp1, exp2) -> 
+    (* exp1[exp2] - compile as lhs then load *)
+    let arr_t, arr_op, arr_strm = cmp_exp c exp1 in
+    let idx_t, idx_op, idx_strm = cmp_exp c exp2 in
+    (match (arr_t, idx_t) with
+    | (Ptr (Struct [_; Array (_, element_ty)]), I64) -> 
+      let ptr_id = gensym "index_ptr" in
+      let load_id = gensym "index_load" in
+      (element_ty, Id load_id,
+        arr_strm 
+        >@ idx_strm 
+        >@ [I (ptr_id, Gep (arr_t, arr_op, [Const 0L; Const 1L; idx_op]))]
+        >@ [I (load_id, Load (Ptr element_ty, Id ptr_id))]
       )
       (* handle global arrays; *)
     | (Struct [_; Array (_, element_ty)], I64) -> 
         let ptr_id = gensym "gindex_ptr" in
         let load_id = gensym "gindex_load" in
         (element_ty, Id load_id,
-         arr_strm 
-         >@ idx_strm
-         >@ [ I (ptr_id, Gep (Ptr arr_t, arr_op, [Const 0L; Const 1L; idx_op])) ;
+          arr_strm 
+          >@ idx_strm
+          >@ [ I (ptr_id, Gep (Ptr arr_t, arr_op, [Const 0L; Const 1L; idx_op])) ;
               I (load_id, Load (Ptr element_ty, Id ptr_id)) ]
         )
     | _ -> failwith "Index: expected array type and i64 index"
@@ -529,9 +559,10 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
     )
   | Decl (id, exp_node) ->
     let ty, oprnd, strm = cmp_exp c exp_node in
+    let unique_id = gensym ("unique" ^ id) in
     (* Do not forget to add the binding to the context!! *)
-    let c' = Ctxt.add c id (Ptr ty, Id id) in
-    (c', strm >@ [E (id, Ll.Alloca ty)] >@ [I (id, Ll.Store (ty, oprnd, Id id))])
+    let c' = Ctxt.add c id (Ptr ty, Id unique_id) in
+    (c', strm >@ [E (unique_id, Ll.Alloca ty)] >@ [I (unique_id, Ll.Store (ty, oprnd, Id unique_id))])
   | While (exp_node, body) ->
     (* This is a scoping statement, which means that the context needs to be 
        saved before executing the body of the loop*)
@@ -649,7 +680,7 @@ let rec cmp_stmt (c:Ctxt.t) (rt:Ll.ty) (stmt:Ast.stmt node) : Ctxt.t * stream =
        )
       | _ -> failwith "Invalid left-hand-side in assignment"
       )
-
+ 
   | SCall (exp_node, exp_node_list) -> 
     (* Idea: resuse most of the Call exp to handle the SCall statement: *)
     let func_t, func_op = Ctxt.lookup_function (match exp_node.elt with
@@ -815,7 +846,9 @@ let cmp_fdecl (c:Ctxt.t) (f:Ast.fdecl node) : Ll.fdecl * (Ll.gid * Ll.gdecl) lis
                         | _ -> [])  in *)
   (* print_stream full_stream; *)
   let cfg, some_list = cfg_of_stream full_stream in
-  (* create a cfg by building a stream and using cfg_of_stream *)
+  (* Printf.printf "Function %s compiled to CFG %s\n" function_name (Llutil.string_of_cfg cfg);
+  print_endline "--------------END CFG ----------------"; *)
+  (* create a cfg by building a stream and  using cfg_of_stream *)
 
     (* Note: lift takes a Ll.block.insns and returns a stream.*)
     (* 
