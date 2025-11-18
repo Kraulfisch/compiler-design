@@ -603,9 +603,36 @@ let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
   in
   add_function tc p
 
+let contains_global_identifiers (e:Ast.exp Ast.node) (tc:Tctxt.t) : bool =
+  let rec aux exp =
+    match exp.elt with
+    | Id id ->
+      (match Tctxt.lookup_global_option id tc with
+      | Some _ -> true
+      | None -> false)
+    | CArr (_, exprs) ->
+      List.exists aux exprs
+    | NewArr (_, size_exp, _, init_exp) ->
+      aux size_exp || aux init_exp
+    | Index (arr_exp, index_exp) ->
+      aux arr_exp || aux index_exp
+    | Length arr_exp ->
+      aux arr_exp
+    | CStruct (_, field_inits) ->
+      List.exists (fun (_, fexp) -> aux fexp) field_inits
+    | Proj (struct_exp, _) ->
+      aux struct_exp
+    | Call (fn_exp, arg_exps) ->
+      aux fn_exp || List.exists aux arg_exps
+    | Bop (_, e1, e2) ->
+      aux e1 || aux e2
+    | Uop (_, exp) ->
+      aux exp
+    | _ -> false
+  in
+  aux e
 
 let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "TODO: create_global_ctxt"
   (* create_global_ctxt: - typechecks the global initializers and adds
    their identifiers to the 'G' global context
 
@@ -613,6 +640,34 @@ let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
 
   (* NOTE: global initializers may mention function identifiers as
    constants, but can't mention other global values *)
+
+  let rec add_globals tc prog =
+    match prog with
+    | [] -> tc
+    | h::t ->
+      (match h with
+      | Gvdecl ({elt=g} as l) -> (* TYP_GGDECL*)
+        (* H;G1 |-g global x = gexp; prog => G2 if 
+           gexp contains no global variables/identifiers
+            type of gexp is t
+            x \not \in G1
+            H; G1, x:t |-g prog => G2
+          *)
+        if Tctxt.lookup_global_option g.name tc <> None then
+          type_error l ("Duplicate global identifier: " ^ g.name)
+        else
+          let init_type = typecheck_exp tc g.init in
+          typecheck_ty l tc init_type;
+          (* check that gexp contains no global variables *)
+          (match contains_global_identifiers g.init tc with
+          | true -> type_error l ("Global initializer for " ^ g.name ^ " contains global identifiers")
+          | false -> let tc' = Tctxt.add_global tc g.name init_type in
+                      add_globals tc' t
+          )
+
+      | _ -> add_globals tc t) (* again, ignore f and t decls*)
+  in
+  add_globals tc p
 
    
   (* let rec global_helper tc prog =
