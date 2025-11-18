@@ -140,7 +140,6 @@ and typecheck_rty (l : 'a Ast.node) (tc : Tctxt.t) (r : Ast.rty) : unit =
     (* simply typecheck all arguments and then the return type in unit fashion *)
     List.iter (fun arg -> typecheck_ty l tc arg) arg_types;
     typecheck_ret_ty l tc ret_type
-
 and typecheck_ret_ty (l : 'a Ast.node) (tc : Tctxt.t) (r : Ast.ret_ty) : unit =
   match r with 
   | Ast.RetVoid -> ()
@@ -149,7 +148,7 @@ and typecheck_ret_ty (l : 'a Ast.node) (tc : Tctxt.t) (r : Ast.ret_ty) : unit =
 (* typechecking expressions ------------------------------------------------- *)
 (* Typechecks an expression in the typing context c, returns the type of the
    expression.  This function should implement the inference rules given in the
-   oad.pdf specification.  There, they are written:
+   oat.pdf specification.  There, they are written:
 
        H; G; L |- exp : t
 
@@ -172,7 +171,207 @@ and typecheck_ret_ty (l : 'a Ast.node) (tc : Tctxt.t) (r : Ast.ret_ty) : unit =
 
 *)
 let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
-  failwith "todo: implement typecheck_exp"
+  match e.elt with
+  (* Firstly the TYP_X rules: *)
+  | CNull r -> Ast.TNullRef r
+  | CBool b -> Ast.TBool
+  | CInt i -> Ast.TInt
+  | CStr s -> Ast.TRef Ast.RString
+  (* TYP Local and global: *)
+   | Id id ->
+    (match (Tctxt.lookup_local_option id c) with
+    | Some ty -> ty
+    | None -> (* Continue looking in the Global context*)
+         (match (Tctxt.lookup_global_option id c) with
+        | Some ty -> ty
+        | None -> type_error e ("Undefined identifier: " ^ id)
+        )
+    )
+  | CArr (ty, expressions) -> 
+    (* new t[]{expr1, ..., exprn} has type t[] if:
+          t is well typed
+          exp1, ..., expn of type t1,..,tn are in the context (global local or struct) and
+          each t_i is a subtype of t
+      *)
+
+    (* if Tctxt.lookup_struct_option *)
+    typecheck_ty e c ty;  (* check that ty is well formed *)
+    List.iter (fun exp ->
+      let exp_type = typecheck_exp c exp in
+      if not (subtype c exp_type ty) then
+        type_error exp ("Array element type " ^ (Astlib.string_of_ty exp_type) ^
+                        " is not a subtype of array type " ^ (Astlib.string_of_ty ty))
+    ) expressions;
+    Ast.TRef (Ast.RArray ty)
+  | NewArr (ty, size_exp, id, init_exp) ->
+    (* new t[size] (x => exp2) has type t[] if:
+          t is well typed
+          size is of type int
+          x \not \in local context
+          type of exp2 is t2 and t2 is a subtype of t *)
+    typecheck_ty e c ty;  (* check that ty is well formed *)
+    let size_type = typecheck_exp c size_exp in
+    if not (subtype c size_type Ast.TInt) then
+      type_error size_exp ("Array size expression must be of type int, found " ^ (Astlib.string_of_ty size_type));
+    let c_with_id = Tctxt.add_local c id ty in
+    let init_type = typecheck_exp c_with_id init_exp in
+    if not (subtype c init_type ty) then
+      type_error init_exp ("Array initializer expression type " ^ (Astlib.string_of_ty init_type) ^
+                           " is not a subtype of array type " ^ (Astlib.string_of_ty ty));
+    Ast.TRef (Ast.RArray ty)
+
+  | Index (arr_exp, index_exp) ->
+    (* exp1[exp2] has type t if:
+          exp1 is of type t[]
+          exp2 is of type int *)
+    let arr_type = typecheck_exp c arr_exp in
+    let index_type = typecheck_exp c index_exp in
+    if not (subtype c index_type Ast.TInt) then
+      type_error index_exp ("Array index expression must be of type int, found " ^ (Astlib.string_of_ty index_type));
+    (match arr_type with
+    | Ast.TRef (Ast.RArray t) -> t
+    (* | Ast.TNullRef (Ast.RArray t) -> t *)
+    | _ -> type_error arr_exp ("Array indexing requires a non-null array type, found " ^ (Astlib.string_of_ty arr_type))
+    )
+
+  | Length arr_exp ->
+    (* length(exp) has type int if:
+          exp is of type t[] *)
+    let arr_type = typecheck_exp c arr_exp in
+    (match arr_type with
+    | Ast.TRef (Ast.RArray t) -> Ast.TInt
+    (* | Ast.TNullRef (Ast.RArray t) -> Ast.TInt *)
+    | _ -> type_error arr_exp ("Length operator requires a non-null array type, found " ^ (Astlib.string_of_ty arr_type))
+    )
+  
+  | CStruct (id, field_inits) ->
+    (* new S {f1=exp1, ..., fn=expn} has type S if:
+          struct S {f1:t1; ... fn:tn} \in H
+          for each exp_i of type t_i' in the context, t_i' <: t_i
+          all fields of S are initialized in the expression
+          also the order of the fields does not matter 
+          \-> (hence presort the fields to check)
+          \-> or better: for each field in S, check that it is initialized in the expression
+      *)
+    (match Tctxt.lookup_struct_option id c with
+    | None -> type_error e ("Undefined struct type: " ^ id)
+    | Some fields ->
+      (* check that all fields are initialized and types match - order does not matter *)
+      let field_types = List.fold_left (fun acc f -> (f.fieldName, f.ftyp)::acc) [] fields in
+      List.iter (fun (fname, fexp) ->
+        (match List.assoc_opt fname field_types with
+        | None -> type_error fexp ("Field " ^ fname ^ " is not a member of struct " ^ id)
+        | Some ftype ->
+          let fexp_type = typecheck_exp c fexp in
+          if not (subtype c fexp_type ftype) then
+            type_error fexp ("Field " ^ fname ^ " initializer type " ^ (Astlib.string_of_ty fexp_type) ^
+                             " is not a subtype of field type " ^ (Astlib.string_of_ty ftype))
+        )
+      ) field_inits;
+      (* check that all fields are initialized *)
+      List.iter (fun (fname, ftype) ->
+        if not (List.exists (fun (init_fname, _) -> init_fname = fname) field_inits) then
+          type_error e ("Field " ^ fname ^ " of struct " ^ id ^ " is not initialized")
+      ) field_types;
+      Ast.TRef (Ast.RStruct id)
+    )
+  (* This is TYP_FIELD rule. Projections appear to be struct field accessess *)
+  | Proj (struct_exp, field_name) ->
+    (* exp.f has type t if:
+          exp is of type S
+          struct S { ... f:t ... } \in H 
+          t f \in fields of S
+          *)
+    let struct_type = typecheck_exp c struct_exp in
+    (match struct_type with
+    | TRef (RStruct id) ->
+      (match Tctxt.lookup_struct_option id c with
+      | None -> type_error struct_exp ("Undefined struct type: " ^ id)
+      | Some fields ->
+        (match List.find_opt (fun f -> f.fieldName = field_name) fields with
+        | None -> type_error struct_exp ("Field " ^ field_name ^ " not found in struct " ^ id)
+        | Some field -> field.ftyp
+        )
+      )
+    | _ -> type_error struct_exp ("Projection requires a non-null struct type, found " ^ (Astlib.string_of_ty struct_type))
+    )
+
+  | Call (fn_exp, arg_exps) ->
+    (* exp1(exp2, ..., expn) has type t_ret if:
+          exp1 is of type (t1, ..., tn) -> t_ret
+          for each exp_i of type t_i' in the context, t_i' <: t_i
+      *)
+    let fn_type = typecheck_exp c fn_exp in
+    (match fn_type with
+    | TRef (RFun (param_types, ret_type)) ->
+      if List.length param_types <> List.length arg_exps then
+        type_error fn_exp ("Function call argument count mismatch: expected " ^
+                           string_of_int (List.length param_types) ^
+                           ", found " ^ string_of_int (List.length arg_exps));
+      List.iter2 (fun param_type arg_exp ->
+        let arg_type = typecheck_exp c arg_exp in
+        if not (subtype c arg_type param_type) then
+          type_error arg_exp ("Function call argument type " ^ (Astlib.string_of_ty arg_type) ^
+                             " is not a subtype of parameter type " ^ (Astlib.string_of_ty param_type))
+      ) param_types arg_exps;
+      (match ret_type with
+      (* An expression must have a type *)
+      | RetVoid -> type_error fn_exp "Function call of void function used in expression context"
+      | RetVal t -> t
+      )
+    | _ -> type_error fn_exp ("Function call requires a non-null function type, found " ^ (Astlib.string_of_ty fn_type))
+    )
+  | Bop (bop, e1, e2) ->
+    (* exp1 bop exp1 has type t if:
+        bop has type (t1, t2) -> t
+        exp1 has type t1 
+        exp2 has type t2
+      *)
+    (match bop with
+    | Eq | Neq ->
+      (* TYP_EQ rule:     (Neq is the same as Eq here)
+          exp1 == exp2 has type bool if:
+            exp1 has type t1
+            exp2 has type t2
+            t1 <: t2 and t2 <: t1
+      *)
+      let e1_type = typecheck_exp c e1 in
+      let e2_type = typecheck_exp c e2 in
+      if not (subtype c e1_type e2_type) then
+        type_error e1 ("Left operand of == has type " ^ (Astlib.string_of_ty e1_type) ^
+                      ", which is not a subtype of right operand type " ^ (Astlib.string_of_ty e2_type));
+      if not (subtype c e2_type e1_type) then
+        type_error e2 ("Right operand of == has type " ^ (Astlib.string_of_ty e2_type) ^
+                      ", which is not a subtype of left operand type " ^ (Astlib.string_of_ty e1_type));
+      Ast.TBool
+    | _ -> 
+      let (expected_t1, expected_t2, result_t) = typ_of_binop bop in
+      let e1_type = typecheck_exp c e1 in
+      let e2_type = typecheck_exp c e2 in
+      if not (subtype c e1_type expected_t1) then
+        type_error e1 ("Left operand of binary operator has type " ^ (Astlib.string_of_ty e1_type) ^
+                      ", expected " ^ (Astlib.string_of_ty expected_t1));
+      if not (subtype c e2_type expected_t2) then
+        type_error e2 ("Right operand of binary operator has type " ^ (Astlib.string_of_ty e2_type) ^
+                      ", expected " ^ (Astlib.string_of_ty expected_t2));
+      result_t
+    )
+  
+  | Uop (unop, exp) ->
+    (* uop exp has type t if:
+        uop has type t -> t
+        exp has type t
+      *)
+    let (expected_t, result_t) = typ_of_unop unop in
+    let exp_type = typecheck_exp c exp in
+    if not (subtype c exp_type expected_t) then
+      type_error exp ("Operand of unary operator has type " ^ (Astlib.string_of_ty exp_type) ^
+                    ", expected " ^ (Astlib.string_of_ty expected_t));
+    result_t
+  
+
+  
+
 
 (* statements --------------------------------------------------------------- *)
 
@@ -208,7 +407,33 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
      block typecheck rules.
 *)
 let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.t * bool =
-  failwith "todo: implement typecheck_stmt TODO"
+  (* returns the new context after the statement s including newly declared variables in scope *)
+  failwith "TODO: stmt"
+  (* match s.elt with
+  | Ast.Assn (lhs, rhs) ->
+    (* idea: lookup lhs in the local context 
+                    update it's value to rhs if present
+                or: add rhs' value to local context if not present
+    *)
+    let lhs_type = typecheck_exp tc lhs in
+    let rhs_type = typecheck_exp tc rhs in
+    if subtype tc rhs_type lhs_type then
+      (* add lhs to the context and return (new context, false)*)
+      (match lhs.elt with
+      | Id id -> (Tctxt.add_local tc id lhs_type, false)
+      | CStruct (id, _) -> (Tctxt.add_global tc id lhs_type, false)
+      | _ -> (tc, false)
+      )
+    else
+      type_error s ("Type mismatch in assignment: cannot assign " ^
+                    (Astlib.string_of_ty rhs_type) ^ " to " ^
+                    (Astlib.string_of_ty lhs_type))
+
+
+  | Decl (vdecl) -> failwith "todo decl"
+  | Ret (exp_opt) -> failwith "todo ret"
+  | _ -> failwith "todo others" *)
+  
 
 
 (* struct type declarations ------------------------------------------------- *)
@@ -238,7 +463,8 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
   (* 1. Add function args to the context
      2. typecheck the entire body of the function using ___
      3. ?? check for function return ?? *)
-  let tc_with_args = List.fold_left (fun acc_tc (arg_ty, arg_id) ->
+  failwith "TODO: typecheck_fdecl"
+  (* let tc_with_args = List.fold_left (fun acc_tc (arg_ty, arg_id) ->
       Tctxt.add_local acc_tc arg_id arg_ty
     ) tc f.args in
   List.iter (fun s ->
@@ -248,7 +474,7 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
     else
       ()
 
-  ) f.body
+  ) f.body *)
 
 (* creating the typchecking context ----------------------------------------- *)
 
@@ -282,7 +508,8 @@ let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
   (* Add all the struct types to the struct 'H' (checking to see that there are not duplicate fields)
        H |-s prog ==> H'
   *)
-  let rec add_structs tc prog =
+  failwith "TODO: create_struct_ctxt"
+  (* let rec add_structs tc prog =
     match prog with
     | [] -> tc
     | h :: t ->
@@ -295,7 +522,7 @@ let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
           add_structs tc' t )
       | _ -> add_structs tc t)
   in
-  add_structs Tctxt.empty p
+  add_structs Tctxt.empty p *)
 
 
 let check_duplicate_function_identifiers (c:Tctxt.t) (l:Ast.fdecl) : bool =
@@ -305,10 +532,33 @@ let check_duplicate_function_identifiers (c:Tctxt.t) (l:Ast.fdecl) : bool =
   )
 
 let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
+  failwith "TODO: create_function_ctxt"
   (* adds the the function identifiers and their types to 
      the 'G' context (ensuring that there are no redeclared function identifiers)
        H ; G1 |-f prog ==> G2 *)
-  let rec func_helper tc prog =
+  (* let tc_with_sigs =
+    List.fold_left (fun acc h ->
+      match h with
+      | Gfdecl ({elt=f} as l) ->
+        (* duplicate check *)
+        (match Tctxt.lookup_global_option f.fname acc with
+         | Some _ -> type_error l ("Duplicate function identifier: " ^ f.fname)
+         | None ->
+           let arg_types = List.map (fun (ty, _) -> ty) f.args in
+           let func_type = TRef (RFun (arg_types, f.frtyp)) in
+           Tctxt.add_global acc f.fname func_type)
+      | _ -> acc
+    ) tc p in
+  (* Now typecheck bodies with all function types present *)
+  List.iter (fun h ->
+    match h with
+    | Gfdecl ({elt=f} as l) -> typecheck_fdecl tc_with_sigs f l
+    | _ -> ()
+  ) p;
+  tc_with_sigs *)
+
+
+  (* let rec func_helper tc prog =
     (match prog with
     | [] -> tc
     | h::t ->
@@ -326,10 +576,30 @@ let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
 
       | _ -> func_helper tc t
       )) in
-  func_helper tc p
+  func_helper tc p *)
 
 let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+  failwith "TODO: create_global_ctxt"
+  (* create_global_ctxt: - typechecks the global initializers and adds
+   their identifiers to the 'G' global context
+
+     H ; G1 |-g prog ==> G2     *)
+
+  (* NOTE: global initializers may mention function identifiers as
+   constants, but can't mention other global values *)
+  (* let rec global_helper tc prog =
+    match prog with
+    | [] -> tc
+    | h::t ->
+      (match h with
+      | Gvdecl ({elt=g} as l) ->
+        let init_type = typecheck_exp tc g.init in
+        typecheck_ty l tc init_type;
+        let tc' = Tctxt.add_global tc g.name init_type in
+        global_helper tc' t
+      | _ -> global_helper tc t)
+  in
+  global_helper tc p *)
 
 
 (* This function implements the |- prog and the H ; G |- prog 
