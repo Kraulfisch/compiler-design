@@ -476,7 +476,7 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
 
   ) f.body *)
 
-(* creating the typchecking context ----------------------------------------- *)
+(* creating the typechecking context ----------------------------------------- *)
 
 (* The following functions correspond to the
    judgments that create the global typechecking context.
@@ -507,22 +507,47 @@ let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
   (* failwith "todo: create_struct_ctxt" *)
   (* Add all the struct types to the struct 'H' (checking to see that there are not duplicate fields)
        H |-s prog ==> H'
-  *)
-  failwith "TODO: create_struct_ctxt"
-  (* let rec add_structs tc prog =
+    Note that a global initializers may mention function identifiers as constants,
+    but can't mention other global values *)
+  
+  (* Follow the H1 |-s prog ==> H2 rule from oat specifications *)
+
+  let rec add_structs tc prog =
     match prog with
+    (* TYP_SEMPTY *)
     | [] -> tc
     | h :: t ->
       (match h with
-      | Gtdecl ({elt=(id, fs)} as l) ->
-        typecheck_tdecl tc id fs l;
-        (match check_dups fs with
-        | true -> failwith "Duplicate fieldnames in create_struct_ctxt"
-        | _ -> let tc' = Tctxt.add_struct tc id fs in
-          add_structs tc' t )
-      | _ -> add_structs tc t)
+      (* TYP_STDECL *)
+      | Gtdecl ({elt=(id, fields)} as l) ->
+        (* struct S{fields} prog ==> H2 if
+            S \not \in H1
+            H1, struct S{fields} |-s prog ==> H2 
+            ---->> which means: add struct S{fields} to H1 to get H1'
+                              then continue with prog and H1' to get H2 recursively
+          *)
+        (match Tctxt.lookup_struct_option id tc with
+        | Some _ -> type_error l ("Duplicate struct identifier: " ^ id)
+        | None ->
+          (* First check that all fields are distinct by iterating 
+             over all field names and checking if it has already been seen *)
+          if check_dups fields then
+            type_error l ("Repeated fields in struct " ^ id)
+          else
+            typecheck_tdecl tc id fields l;
+            let tc_with_struct = Tctxt.add_struct tc id fields in
+            add_structs tc_with_struct t
+        )
+      | _ ->
+        (* TYP_SGDECL and TYP_SFDECL rule: *)
+        (* H1 |-s g\f decl prog ==> H2 if:
+            H1 |-s prog ==> H2
+            ---->> just continue with prog and H1 to get H2 recursively ignore g/f decls
+        *)
+        add_structs tc t
+      )
   in
-  add_structs Tctxt.empty p *)
+  add_structs Tctxt.empty p
 
 
 let check_duplicate_function_identifiers (c:Tctxt.t) (l:Ast.fdecl) : bool =
@@ -531,52 +556,53 @@ let check_duplicate_function_identifiers (c:Tctxt.t) (l:Ast.fdecl) : bool =
   | Some x -> true
   )
 
+let fdecl_to_type (tc:Tctxt.t) (f:Ast.fdecl) : Ast.ty =
+  (* H |- fdecl ==> id : t
+    rt f(t1 x1, ..., tn xn) { ... }  ==>  f : (t1, ..., tn) -> rt if
+      each t_i is well formed
+      rt is well formed (ret_ty)
+  *)
+  let arg_types = List.map (fun (ty, _) -> ty) f.args in
+  let func_type = TRef (RFun (arg_types, f.frtyp)) in
+  typecheck_ret_ty (no_loc 0) tc f.frtyp;
+  List.iter (fun (ty, _) -> typecheck_ty (no_loc 0) tc ty) f.args;
+  func_type
+
+
 let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "TODO: create_function_ctxt"
   (* adds the the function identifiers and their types to 
      the 'G' context (ensuring that there are no redeclared function identifiers)
        H ; G1 |-f prog ==> G2 *)
-  (* let tc_with_sigs =
-    List.fold_left (fun acc h ->
-      match h with
-      | Gfdecl ({elt=f} as l) ->
-        (* duplicate check *)
-        (match Tctxt.lookup_global_option f.fname acc with
-         | Some _ -> type_error l ("Duplicate function identifier: " ^ f.fname)
-         | None ->
-           let arg_types = List.map (fun (ty, _) -> ty) f.args in
-           let func_type = TRef (RFun (arg_types, f.frtyp)) in
-           Tctxt.add_global acc f.fname func_type)
-      | _ -> acc
-    ) tc p in
-  (* Now typecheck bodies with all function types present *)
-  List.iter (fun h ->
-    match h with
-    | Gfdecl ({elt=f} as l) -> typecheck_fdecl tc_with_sigs f l
-    | _ -> ()
-  ) p;
-  tc_with_sigs *)
 
-
-  (* let rec func_helper tc prog =
+  let rec add_function tc prog =
     (match prog with
-    | [] -> tc
-    | h::t ->
+    | [] -> tc (* TYP_FEMPTY *)
+    | h :: t ->
       (match h with
-      | Gfdecl ({elt=f} as l) ->
-        typecheck_fdecl tc f l;
-        (match check_duplicate_function_identifiers tc f with
-        | true -> failwith "Duplicate funciton identifiers in create_function_ctxt!"
-        | _ -> (* function identifier does not yet exist, add it to the context*)
-          let arg_types = List.map (fun (ty, _) -> ty) f.args in
-          let func_type = TRef (RFun (arg_types, f.frtyp)) in
-          let tc' = Tctxt.add_global tc f.fname func_type in
-          func_helper tc' t
-        )
+      | Gfdecl ({elt=f} as l) -> (* TYP_FFDECL *)
+        (* duplicate check *)
+        if check_duplicate_function_identifiers tc f then
+          type_error l ("Duplicate function identifier: " ^ f.fname)
+        else
+          (* let arg_types = List.map (fun (ty, _) -> ty) f.args in *)
+          (* also check that all function argument names are distinct *)
+          if check_duplicate_function_identifiers tc f then
+            type_error l ("Duplicate function identifier: " ^ f.fname)
+          else
+            List.iter (fun (_, arg_id) ->
+              if List.length (List.filter (fun (_, id) -> id = arg_id) f.args) > 1 then
+                type_error l ("Duplicate argument name: " ^ arg_id)
+            ) f.args;
+            let func_type = fdecl_to_type tc f in
+            let tc' = Tctxt.add_global tc f.fname func_type in
+            add_function tc' t
+      | _ -> (* TYP_FGDECL and TYP_FTDECL rule ignore the other declarations and continue recursively *)
+        add_function tc t
+      )
+    )
+  in
+  add_function tc p
 
-      | _ -> func_helper tc t
-      )) in
-  func_helper tc p *)
 
 let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
   failwith "TODO: create_global_ctxt"
@@ -587,6 +613,8 @@ let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
 
   (* NOTE: global initializers may mention function identifiers as
    constants, but can't mention other global values *)
+
+   
   (* let rec global_helper tc prog =
     match prog with
     | [] -> tc
