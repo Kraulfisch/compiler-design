@@ -410,8 +410,8 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
 *)
 let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.t * bool =
   (* returns the new context after the statement s including newly declared variables in scope *)
-  failwith "TODO: stmt"
-  (* match s.elt with
+  
+  match s.elt with
   | Ast.Assn (lhs, rhs) ->
     (* idea: lookup lhs in the local context 
                     update it's value to rhs if present
@@ -434,7 +434,7 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
 
   | Decl (vdecl) -> failwith "todo decl"
   | Ret (exp_opt) -> failwith "todo ret"
-  | _ -> failwith "todo others" *)
+  | _ -> failwith "todo others"
   
 
 
@@ -483,7 +483,7 @@ let rec typecheck_block (tc: Tctxt.t) (blk: Ast.block) (to_ret: Ast.ret_ty) : Tc
 let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
   (* 1. Add function args to the context
      2. typecheck the entire body of the function using ___
-     3. ?? check for function return ?? *)
+     3. check for function return *)
      
   let ret_ty = f.frtyp in
   let fname: Ast.id = f.fname in
