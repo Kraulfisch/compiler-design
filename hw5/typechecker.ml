@@ -134,8 +134,10 @@ and typecheck_rty (l : 'a Ast.node) (tc : Tctxt.t) (r : Ast.rty) : unit =
     (* I guess this translates to all fields must be typechecked
        i.e. all (fun f -> typecheck_ty tc f.ftyp) fields_of_S *)
     (match Tctxt.lookup_struct_option id tc with
-    | None -> type_error l ("Undefined struct type: " ^ id)
-    | Some fields -> List.iter (fun f -> typecheck_ty l tc f.ftyp) fields)
+    | None -> type_error l ("Undefined struct type3: " ^ id)
+    | Some _ -> () (* prevent recursion*)
+    (* | Some fields -> List.iter (fun f -> typecheck_ty l tc f.ftyp) fields *)
+    )
   | Ast.RFun (arg_types, ret_type) ->
     (* simply typecheck all arguments and then the return type in unit fashion *)
     List.iter (fun arg -> typecheck_ty l tc arg) arg_types;
@@ -254,7 +256,7 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
           \-> or better: for each field in S, check that it is initialized in the expression
       *)
     (match Tctxt.lookup_struct_option id c with
-    | None -> type_error e ("Undefined struct type: " ^ id)
+    | None -> type_error e ("Undefined struct type2: " ^ id)
     | Some fields ->
       (* check that all fields are initialized and types match - order does not matter *)
       let field_types = List.fold_left (fun acc f -> (f.fieldName, f.ftyp)::acc) [] fields in
@@ -452,7 +454,26 @@ let typecheck_tdecl (tc : Tctxt.t) id fs  (l : 'a Ast.node) : unit =
   then type_error l ("Repeated fields in " ^ id) 
   else List.iter (fun f -> typecheck_ty l tc f.ftyp) fs
 
+
+  
 (* function declarations ---------------------------------------------------- *)
+let rec typecheck_block (tc: Tctxt.t) (blk: Ast.block) (to_ret: Ast.ret_ty) : Tctxt.t * bool =
+  (* typecheck a block of statements
+      - extends the local context with any newly declared variables
+      - typechecks each statement in sequence
+      - tracks whether the block definitely returns or might not return
+  *)
+  match blk with
+  | [] -> (tc, false)  (* empty block might not return *)
+  | s :: rest ->
+    let (tc_after_s, does_return_s) = typecheck_stmt tc s to_ret in
+    if does_return_s then
+      (* if the first statement definitely returns, the whole block does *)
+      (tc_after_s, true)
+    else
+      (* else continue with the rest of the block *)
+      typecheck_block tc_after_s rest to_ret  
+
 (* typecheck a function declaration 
     - extends the local context with the types of the formal parameters to the 
       function
@@ -463,7 +484,27 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
   (* 1. Add function args to the context
      2. typecheck the entire body of the function using ___
      3. ?? check for function return ?? *)
-  failwith "TODO: typecheck_fdecl"
+     
+  let ret_ty = f.frtyp in
+  let fname: Ast.id = f.fname in
+  let arg_types: Ast.ty list = List.map (fun (ty, _) -> ty) f.args in
+  let arg_ids: Ast.id list = List.map (fun (_, id) -> id) f.args in
+  let body: Ast.block = f.body in
+
+  (* Step 1: add function args to the context *)
+  let tc_with_args = List.fold_left2 (fun acc_tc arg_ty arg_id ->
+      Tctxt.add_local acc_tc arg_id arg_ty
+    ) tc arg_types arg_ids in
+  
+  (* Step 2: typecheck the entire body of the function *)
+  let (tc_after_body, does_return) = typecheck_block tc_with_args body ret_ty in
+
+  (* Step 3: check for function return *)
+  if not does_return then
+    type_error l ("Function " ^ fname ^ " might not return")
+  else
+    ()
+
   (* let tc_with_args = List.fold_left (fun acc_tc (arg_ty, arg_id) ->
       Tctxt.add_local acc_tc arg_id arg_ty
     ) tc f.args in
@@ -512,6 +553,31 @@ let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
   
   (* Follow the H1 |-s prog ==> H2 rule from oat specifications *)
 
+  (* Two pass approach: *)
+  (* Pass 1: add all struct names (and their field lists) to H *)
+  (* let h1 =
+    List.fold_left
+      (fun tc g ->
+         match g with
+         | Gtdecl ({elt=(id, fields)} as l) ->
+             if Tctxt.lookup_struct_option id tc <> None then
+               type_error l ("Duplicate struct identifier: " ^ id)
+             else if check_dups fields then
+               type_error l ("Repeated fields in struct " ^ id)
+             else
+               Tctxt.add_struct tc id fields
+         | _ -> tc)
+      Tctxt.empty p
+  in
+  (* Pass 2: with all names present, check that field types are well-formed *)
+  List.iter
+    (fun g ->
+       match g with
+       | Gtdecl ({elt=(id, fs)} as l) -> typecheck_tdecl h1 id fs l
+       | _ -> ())
+    p;
+  h1 *)
+
   let rec add_structs tc prog =
     match prog with
     (* TYP_SEMPTY *)
@@ -534,7 +600,7 @@ let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
           if check_dups fields then
             type_error l ("Repeated fields in struct " ^ id)
           else
-            typecheck_tdecl tc id fields l;
+            (* typecheck_tdecl tc id fields l; *)
             let tc_with_struct = Tctxt.add_struct tc id fields in
             add_structs tc_with_struct t
         )
@@ -608,6 +674,7 @@ let contains_global_identifiers (e:Ast.exp Ast.node) (tc:Tctxt.t) : bool =
     match exp.elt with
     | Id id ->
       (match Tctxt.lookup_global_option id tc with
+      | Some (TRef (RFun _)) -> false  (* function identifiers are allowed *)
       | Some _ -> true
       | None -> false)
     | CArr (_, exprs) ->
@@ -657,7 +724,7 @@ let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
           type_error l ("Duplicate global identifier: " ^ g.name)
         else
           let init_type = typecheck_exp tc g.init in
-          typecheck_ty l tc init_type;
+          (* typecheck_ty l tc init_type; *)
           (* check that gexp contains no global variables *)
           (match contains_global_identifiers g.init tc with
           | true -> type_error l ("Global initializer for " ^ g.name ^ " contains global identifiers")
@@ -668,21 +735,6 @@ let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
       | _ -> add_globals tc t) (* again, ignore f and t decls*)
   in
   add_globals tc p
-
-   
-  (* let rec global_helper tc prog =
-    match prog with
-    | [] -> tc
-    | h::t ->
-      (match h with
-      | Gvdecl ({elt=g} as l) ->
-        let init_type = typecheck_exp tc g.init in
-        typecheck_ty l tc init_type;
-        let tc' = Tctxt.add_global tc g.name init_type in
-        global_helper tc' t
-      | _ -> global_helper tc t)
-  in
-  global_helper tc p *)
 
 
 (* This function implements the |- prog and the H ; G |- prog 
