@@ -412,11 +412,20 @@ let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
             else Tctxt.add_global c fname (TRef (RFun (List.map (fun (a, b) -> a) args, frtyp)))
         end
     | _ -> c 
-  ) Tctxt.empty p
+  ) tc p
 
 let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_global_ctxt"
-
+    List.fold_left (fun c d ->
+    match d with
+    | Ast.Gvdecl ({ elt={name; init} } as l) -> 
+        begin match lookup_global_option name c with
+        | Some _ -> type_error l "create_global_ctxt"
+        | None -> 
+            let init_ty = typecheck_exp tc init in 
+            Tctxt.add_global c name init_ty
+        end
+    | _ -> c 
+  ) tc p
 
 (* This function implements the |- prog and the H ; G |- prog 
    rules of the oat.pdf specification.   
