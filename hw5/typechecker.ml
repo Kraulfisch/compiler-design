@@ -348,7 +348,16 @@ let typecheck_tdecl (tc : Tctxt.t) id fs  (l : 'a Ast.node) : unit =
     - checks that the function actually returns
 *)
 let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
-  failwith "todo: typecheck_fdecl"
+  let local_ctxt = List.fold_left (fun c (t, id) -> 
+    Tctxt.add_local c id t
+  ) tc f.args in
+  let returns = typecheck_block local_ctxt f.body f.frtyp in
+  begin match f.frtyp with
+  | RetVoid -> () 
+  | RetVal _ -> 
+      if returns then () 
+      else type_error l "typecheck_fdecl"
+  end
 
 (* creating the typchecking context ----------------------------------------- *)
 
@@ -376,15 +385,37 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
 
    NOTE: global initializers may mention function identifiers as
    constants, but can't mention other global values *)
-
 let create_struct_ctxt (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_struct_ctxt"
+  List.fold_left (fun c d ->
+    match d with
+    | Ast.Gtdecl ({ elt=(id, fs) } as l) -> 
+        begin match lookup_struct_option id c with
+        | Some _ -> type_error l "create_struct_ctxt"
+        | None -> 
+            if check_dups fs 
+            then type_error l "create_struct_ctxt_dubs" 
+            else Tctxt.add_struct c id fs
+        end
+    | _ -> c 
+  ) Tctxt.empty p
 
 let create_function_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+    List.fold_left (fun c d ->
+    match d with
+    | Ast.Gfdecl ({ elt={frtyp; fname; args; body} } as l) -> 
+        begin match lookup_global_option fname c with
+        | Some _ -> type_error l "create_function_ctxt"
+        | None -> 
+            let arg_ty = List.map (fun (a, b) -> {fieldName = b; ftyp = a}) args in
+            if check_dups arg_ty
+            then type_error l "create_function_ctxt_dubs" 
+            else Tctxt.add_global c fname (TRef (RFun (List.map (fun (a, b) -> a) args, frtyp)))
+        end
+    | _ -> c 
+  ) Tctxt.empty p
 
 let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+  failwith "todo: create_global_ctxt"
 
 
 (* This function implements the |- prog and the H ; G |- prog 
