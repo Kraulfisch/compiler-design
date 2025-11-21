@@ -58,8 +58,23 @@ let rec subtype (c : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
 and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
   match (t1, t2) with
   | (RString, RString) -> true
-  | (RStruct id1, RStruct id2) -> id1 = id2
-  | (RArray arr1, RArray arr2) -> subtype c arr1 arr2
+  | RStruct id1, RStruct id2 ->
+      let s1_opt = Tctxt.lookup_struct_option id1 c in
+      let s2_opt = Tctxt.lookup_struct_option id2 c in   
+      begin match s1_opt, s2_opt with
+      | Some s1_fields, Some s2_fields -> 
+          List.for_all (fun req_f ->
+              let actual_f_opt = List.find_opt 
+                  (fun actual_f -> actual_f.fieldName = req_f.fieldName) s1_fields 
+              in
+              begin match actual_f_opt with
+              | None -> false 
+              | Some actual_f -> (subtype c actual_f.ftyp req_f.ftyp) && (subtype c req_f.ftyp actual_f.ftyp)
+              end
+          ) s2_fields
+      | _ -> false
+      end
+  | (RArray ty1, RArray ty2) -> (subtype c ty1 ty2) && (subtype c ty2 ty1)
   | (RFun (arg1, ret1), RFun (arg2, ret2)) -> subtype_args c arg1 arg2 && subtype_ret c ret1 ret2
   | _ -> false
 and subtype_ret (c : Tctxt.t) (t1: Ast.ret_ty) (t2: Ast.ret_ty) : bool =
@@ -271,8 +286,10 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
                        (new_ctxt, false)
   | Assn (lhs, rhs) -> let t_lhs = typecheck_exp tc lhs in  
                        let t_rhs = typecheck_exp tc rhs in 
+                       let subty = subtype tc t_rhs t_lhs in
                        begin match lhs.elt with
-                       | Id _ | Index _ | Proj _ -> if subtype tc t_rhs t_lhs then (tc, false) else type_error s "Typecheck_stmt_assn_elt"
+                       | Index _ | Proj _ -> if subty then (tc, false) else type_error s "Typecheck_stmt_assn_elt"
+                       | Id id -> if subty && check_id_assn tc id then (tc, false) else type_error s "Typecheck_stmt_assn_id"
                        | _ -> type_error s "Typecheck_stmt_Assn"
                        end
   | If (grd, blk1, blk2) -> let t1 = typecheck_block tc blk1 to_ret in 
@@ -324,6 +341,19 @@ and typecheck_block (tc : Tctxt.t) (stmts : Ast.stmt node list) (to_ret : Ast.re
       (new_ctxt, (b || acc_ret))
   ) (tc, false) stmts in
   returns
+and check_id_assn (tc: Tctxt.t) (id: Ast.id) : bool = 
+  let loc_var = begin match lookup_local_option id tc with
+                | None -> false
+                | Some s -> true
+                end in
+  let n_glb_fdecl = begin match lookup_global_option id tc with
+                         | None -> true
+                         | Some s -> begin match s with
+                                     | TRef (RFun (args,rt)) -> false
+                                     | _ -> true
+                                     end
+                         end in
+  (loc_var || n_glb_fdecl)
 (* struct type declarations ------------------------------------------------- *)
 (* Here is an example of how to implement the TYP_TDECLOK rule, which is 
    is needed elswhere in the type system.
