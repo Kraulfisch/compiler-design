@@ -1,3 +1,10 @@
+(* Usage of AI:
+  Keeping track: Keep an overview over the different modules and their interactions
+  Debugging: reading through generated llvm code and explaining 
+  
+
+*)
+
 open Ll
 open Llutil
 open Ast
@@ -271,12 +278,20 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
       | _ -> failwith "broken invariant: identifier not a pointer"
     end
 
-  (* ARRAY TASK: complete this case to compilet the length(e) expression.
+  (* ARRAY TASK: complete this case to compile the length(e) expression.
        The emitted code should yield the integer stored as part 
        of the array struct representation.
   *)
   | Ast.Length e ->
-    failwith "todo:implement Ast.Length case"
+    (* Recall: An Oat array is represented as a struct with the length as the first field *)
+    let arr_ty, arr_op, code = cmp_exp tc c e in
+    let len_id = gensym "len" in
+    let len_ptr = gensym "len_ptr" in
+    (* 0 offset, 0th element is the length of the array: *)
+    let gep_instr = I(len_ptr, Gep(arr_ty, arr_op, [i64_op_of_int 0; i64_op_of_int 0])) in
+    (* load the length  *)
+    let load_instr = I(len_id, Load(I64, Id len_ptr)) in
+    I64, Id len_id, [gep_instr] >@ [load_instr] >@ code
 
   | Ast.Index (e, i) ->
     let ans_ty, ptr_op, code = cmp_exp_lhs tc c exp in
@@ -310,10 +325,74 @@ let rec cmp_exp (tc : TypeCtxt.t) (c:Ctxt.t) (exp:Ast.exp node) : Ll.ty * Ll.ope
      you could write the loop using abstract syntax and then call cmp_stmt to
      compile that into LL code...
   *)
-  | Ast.NewArr (elt_ty, e1, id, e2) ->    
-    let _, size_op, size_code = cmp_exp tc c e1 in
+  | Ast.NewArr (elt_ty, e_size, idx_id, e_init) ->  
+      (* new elt_ty[size]{loop_id -> init_code} *)
+
+      (* var matrix = new int[][3]{i -> new int[3]{j -> i * j}} 
+        this declares [[0,0,0],
+                       [0,1,2],
+                       [0,2,4]]
+        which is equivalent to
+        var matrix = new int*[3]{new int[3]{0,0,0},
+                                 new int[3]{0,1,2},
+                                 new int[3]{0,2,4} }
+        and can be generated using a for loop as follows:
+        var matrix = new int*[3];
+        for (i = 0; i < 3; i = i + 1) {
+          matrix[i] = new int[3];
+          for (j = 0; j < 3; j = j + 1) {
+            matrix[i][j] = i * j;
+          }
+        }
+        We will use this approach to implement the initializer below.
+        The code in llvm generating this loop is the foolowing:
+
+        int64_t size = <code to compute e1>;
+        int** arr = oat_alloc_array(size);  // arr is of type int**
+        for (int64_t i = 0; i < size; i = i + 1) {
+          arr[i] = oat_alloc_array(3);      // arr[i] is of type int*
+          for (int64_t j = 0; j < 3; j = j + 1) {
+            arr[i][j] = <code to compute e2>;  // arr[i][j] is of type int
+          }
+        }
+      *)
+    let _, size_op, size_code = cmp_exp tc c e_size in
     let arr_ty, arr_op, alloc_code = oat_alloc_array tc elt_ty size_op in
-    arr_ty, arr_op, size_code >@ alloc_code
+
+    (* directly generating the llvm code: *)
+    let idx_alloc = gensym idx_id in
+    let lcond, lbody, ldone = gensym "arr_cond", gensym "arr_body", gensym "arr_done" in
+    let elt_ty_ll = cmp_ty tc elt_ty in
+    
+    (* Fresh uids for EACH usage of the index *)
+    let i_cond = gensym "i_cond" in    (* load in condition *)
+    let i_body = gensym "i_body" in    (* load in body for GEP *)
+    let cmp_id = gensym "cmp" in
+    let gep_id = gensym "elt_ptr" in
+    let i_next = gensym "i_next" in
+    
+    (* Add index as Ptr I64 so nested arrays can reference it *)
+    let c_with_idx = Ctxt.add c idx_id (Ptr I64, Id idx_alloc) in
+    let elt_op, elt_code = cmp_exp_as tc c_with_idx e_init elt_ty_ll in
+    
+    arr_ty, arr_op,
+      size_code >@ alloc_code >@
+      lift [
+        idx_alloc, Alloca I64;
+        "", Store (I64, Const 0L, Id idx_alloc);
+      ] >@ [T (Br lcond)] >:: L lcond
+      >@ lift [
+        i_cond, Load (Ptr I64, Id idx_alloc);     (* fresh uid for condition *)
+        cmp_id, Icmp (Slt, I64, Id i_cond, size_op);
+      ] >@ [T (Cbr (Id cmp_id, lbody, ldone))] >:: L lbody
+      >@ elt_code
+      >@ lift [
+        i_body, Load (Ptr I64, Id idx_alloc);     (* fresh uid for body *)
+        gep_id, Gep (arr_ty, arr_op, [Const 0L; Const 1L; Id i_body]);
+        "", Store (elt_ty_ll, elt_op, Id gep_id);
+        i_next, Binop (Add, I64, Id i_body, Const 1L);
+        "", Store (I64, Id i_next, Id idx_alloc);
+      ] >@ [T (Br lcond)] >:: L ldone
 
    (* STRUCT TASK: complete this code that compiles struct expressions.
       For each field component of the struct
@@ -360,9 +439,14 @@ and cmp_exp_lhs (tc : TypeCtxt.t) (c:Ctxt.t) (e:exp node) : Ll.ty * Ll.operand *
       | Ptr (Struct [_; Array (_,t)]) -> t 
       | _ -> failwith "Index: indexed into non pointer" in
     let ptr_id, tmp_id = gensym "index_ptr", gensym "tmp" in
+
     ans_ty, (Id ptr_id),
     arr_code >@ ind_code >@ lift
-      [ptr_id, Gep(arr_ty, arr_op, [i64_op_of_int 0; i64_op_of_int 1; ind_op]) ]
+      [
+      (* Call oat_assert_array_length before doing Gep calculation *)
+      tmp_id, Bitcast(arr_ty, arr_op, Ptr I64); (* Cast to int64_t* as specified in runtime.c *)
+      "", Call(Void, Gid "oat_assert_array_length", [Ptr I64, Id tmp_id; I64, ind_op]);
+      ptr_id, Gep(arr_ty, arr_op, [i64_op_of_int 0; i64_op_of_int 1; ind_op]) ]
 
    
 
@@ -514,8 +598,8 @@ let cmp_global_ctxt (tc : TypeCtxt.t) (c:Ctxt.t) (p:Ast.prog) : Ctxt.t =
     | CNull r -> cmp_ty tc (TNullRef r)
     | CBool b -> I1
     | CInt i  -> I64
-    | CStr s  -> Ptr (str_arr_ty s)
-    | CArr (u, cs) -> Ptr (Struct [I64; Array(List.length cs, cmp_ty tc u)])
+    | CStr s  -> Ptr I8
+    | CArr (u, cs) -> Ptr (Struct [I64; Array(0, cmp_ty tc u)])
     | x -> failwith ( "bad global initializer: " ^ (Astlib.string_of_exp (no_loc x)))
   in
   List.fold_left (fun c -> function
@@ -574,7 +658,8 @@ let rec cmp_gexp c (tc : TypeCtxt.t) (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.
   | CStr s ->
     let gid = gensym "str" in
     let ll_ty = str_arr_ty s in
-    (Ptr ll_ty, GGid gid), [gid, (ll_ty, GString s)]
+    let cast = GBitcast (Ptr ll_ty, GGid gid, Ptr I8) in
+    (Ptr I8, cast), [gid, (ll_ty, GString s)]
 
   | CArr (u, cs) ->
     let elts, gs = List.fold_right
@@ -587,7 +672,9 @@ let rec cmp_gexp c (tc : TypeCtxt.t) (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.
     let gid = gensym "global_arr" in
     let arr_t = Struct [ I64; Array(len, ll_u) ] in
     let arr_i = GStruct [ I64, GInt (Int64.of_int len); Array(len, ll_u), GArray elts ] in
-    (Ptr arr_t, GGid gid), (gid, (arr_t, arr_i))::gs
+    let final_t = Struct [ I64; Array(0, ll_u) ] in
+    let cast = GBitcast (Ptr arr_t, GGid gid, Ptr final_t) in
+    (Ptr final_t, cast), (gid, (arr_t, arr_i))::gs
 
   (* STRUCT TASK: Complete this code that generates the global initializers for a struct value. *)  
   | CStruct (id, cs) ->
