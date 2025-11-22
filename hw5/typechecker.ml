@@ -25,6 +25,11 @@ let builtins =
   ; "print_bool",       ([TBool], RetVoid)
   ]
 
+let add_builtins (c : Tctxt.t) : Tctxt.t =
+  List.fold_left (fun ctxt (name, (arg_types, ret_type)) ->
+      Tctxt.add_global ctxt name (TRef (RFun (arg_types, ret_type)))
+    ) c builtins
+
 (* binary operation types --------------------------------------------------- *)
 let typ_of_binop : Ast.binop -> Ast.ty * Ast.ty * Ast.ty = function
   | Add | Mul | Sub | Shl | Shr | Sar | IAnd | IOr -> (TInt, TInt, TInt)
@@ -57,10 +62,50 @@ let rec subtype (c : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
 
 (* Decides whether H |-r ref1 <: ref2 *)
 and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
+  (* Handle recursive structs: *)
+  (* let cache : (string * string, bool) Hashtbl.t = Hashtbl.create 17 in
+  let visiting : (string * string, unit) Hashtbl.t = Hashtbl.create 17 in
+  let rec go r1 r2 =
+    (match r1, r2 with
+    | RString, RString -> true
+    | RArray t1, RArray t2 -> t1 = t2
+    | RFun (a1, ret1), RFun (a2, ret2) ->
+        List.length a1 = List.length a2
+        && List.for_all2 (fun p2 p1 -> subtype c p2 p1) a2 a1
+        && subtype_ret c ret1 ret2
+    | RStruct s1, RStruct s2 ->
+        if s1 = s2 then true else
+        (* cycle handling *)
+        if Hashtbl.mem cache (s1,s2) then Hashtbl.find cache (s1,s2) else
+        if Hashtbl.mem visiting (s1,s2) then
+          false (* break cycle: treat as non-subtype *)
+        else begin
+          Hashtbl.add visiting (s1,s2) ();
+          let res =
+            match Tctxt.lookup_struct_option s1 c, Tctxt.lookup_struct_option s2 c with
+            | Some fs1, Some fs2 ->
+                (* width + depth: every field of s2 must exist in s1 with compatible type *)
+                List.for_all (fun f2 ->
+                  match List.find_opt (fun f1 -> f1.fieldName = f2.fieldName) fs1 with
+                  | None -> false
+                  | Some f1 ->
+                      (* depth: recurse on field types *)
+                      subtype c f1.ftyp f2.ftyp
+                ) fs2
+            | _ -> false
+          in
+          Hashtbl.remove visiting (s1,s2);
+          Hashtbl.add cache (s1,s2) res;
+          res
+        end
+    | _ -> false
+    )
+  in
+  go t1 t2 *)
   match (t1, t2) with
   | Ast.RString, Ast.RString -> true                            (* SUB_SUBSTRING *)
   | Ast.RArray arr_t1 , Ast. RArray arr_t2 -> arr_t1 = arr_t2   (* SUB_SUBARRAY *)
-  | RStruct id1, RStruct id2 -> 
+  | RStruct id1, RStruct id2 -> (* struct_width [] id1 id2 *)
     if id1 = id2 then true
       (* The bigger struct is a subtype of the smaller one:
          makes sense when comparing to inheritance: when a smaller struct is
@@ -69,7 +114,9 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
       (* If the structs are not the same, follow the subtyping rule: SUB_SUBSTRUCT *)
       (* I.e. S1 <: S2 if S2 has fields t1 x1, ... ,tn xn and
                           S1 has fields t1 x1, ... , tn xn, plus possibly more *)
-      (match (Tctxt.lookup_struct_option id1 c, Tctxt.lookup_struct_option id2 c) with
+      (* Break recursive struct: *)
+      false
+      (* (match (Tctxt.lookup_struct_option id1 c, Tctxt.lookup_struct_option id2 c) with
       | (Some fields1, Some fields2) ->
           (* fields here are lists of Ast.id * Ast.field list *)
           (* idea: for each field with name and type x_i t_i in S2,
@@ -81,7 +128,7 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
               ) fields1
             ) fields2
 
-      | _ -> false)
+      | _ -> false) *)
   | RFun (arg_types1, ret_type1), RFun (arg_types2, ret_type2) ->
     let rec check_args args1 args2 =
       match (args1, args2) with
@@ -180,15 +227,15 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   | CInt i -> Ast.TInt
   | CStr s -> Ast.TRef Ast.RString
   (* TYP Local and global: *)
-   | Id id ->
-    (match (Tctxt.lookup_local_option id c) with
-    | Some ty -> ty
-    | None -> (* Continue looking in the Global context*)
-         (match (Tctxt.lookup_global_option id c) with
-        | Some ty -> ty
-        | None -> type_error e ("Undefined identifier: " ^ id)
-        )
-    )
+  | Id id ->
+  (match (Tctxt.lookup_local_option id c) with
+  | Some ty -> ty
+  | None -> (* Continue looking in the Global context*)
+      (match (Tctxt.lookup_global_option id c) with
+      | Some ty -> ty
+      | None -> type_error e ("Undefined identifier: " ^ id)
+      )
+  )
   | CArr (ty, expressions) -> 
     (* new t[]{expr1, ..., exprn} has type t[] if:
           t is well typed
@@ -215,7 +262,8 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
     let size_type = typecheck_exp c size_exp in
     if not (subtype c size_type Ast.TInt) then
       type_error size_exp ("Array size expression must be of type int, found " ^ (Astlib.string_of_ty size_type));
-    let c_with_id = Tctxt.add_local c id ty in
+    (* Index variable always hase type Int: *)
+    let c_with_id = Tctxt.add_local c id Ast.TInt in
     let init_type = typecheck_exp c_with_id init_exp in
     if not (subtype c init_type ty) then
       type_error init_exp ("Array initializer expression type " ^ (Astlib.string_of_ty init_type) ^
@@ -420,20 +468,49 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     let lhs_type = typecheck_exp tc lhs in
     let rhs_type = typecheck_exp tc rhs in
     if subtype tc rhs_type lhs_type then
+      (tc, false)
       (* add lhs to the context and return (new context, false)*)
-      (match lhs.elt with
+      (* (match lhs.elt with
       | Id id -> (Tctxt.add_local tc id lhs_type, false)
       | CStruct (id, _) -> (Tctxt.add_global tc id lhs_type, false)
       | _ -> (tc, false)
-      )
+      ) *)
     else
       type_error s ("Type mismatch in assignment: cannot assign " ^
                     (Astlib.string_of_ty rhs_type) ^ " to " ^
                     (Astlib.string_of_ty lhs_type))
 
 
-  | Decl (vdecl) -> failwith "todo decl"
-  | Ret (exp_opt) -> failwith "todo ret"
+  | Decl (vdecl) -> 
+    (* An Ast.Decl is a local variable declaration:
+        add it to the context after checking that the initializer expression
+        is a subtype of the declared variable type
+    *)
+    let (var_id, init_exp) = vdecl in
+    let init_type = typecheck_exp tc init_exp in
+    (* Add variable to the context *)
+    let new_tc = Tctxt.add_local tc var_id init_type in
+    (new_tc, false)
+
+  | Ret (exp_opt) ->
+    (match exp_opt with
+    | None -> 
+      (match to_ret with
+      | RetVoid -> (tc, true)
+      | RetVal t -> type_error s ("Return statement missing value of type " ^ (Astlib.string_of_ty t))
+      )
+    | Some exp ->
+      let exp_type = typecheck_exp tc exp in
+      (match to_ret with
+      | RetVoid -> type_error s ("Return statement with value in void function")
+      | RetVal t ->
+        if subtype tc exp_type t then
+          (tc, true)
+        else
+          type_error s ("Return statement type " ^ (Astlib.string_of_ty exp_type) ^
+                        " is not a subtype of expected return type " ^ (Astlib.string_of_ty t))
+      )
+    )
   | _ -> failwith "todo others"
   
 
@@ -734,7 +811,8 @@ let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
 
       | _ -> add_globals tc t) (* again, ignore f and t decls*)
   in
-  add_globals tc p
+  let glob_ctxt = add_globals tc p in
+  add_builtins glob_ctxt
 
 
 (* This function implements the |- prog and the H ; G |- prog 
