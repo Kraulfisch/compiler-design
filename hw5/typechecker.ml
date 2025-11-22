@@ -121,12 +121,20 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
           (* fields here are lists of Ast.id * Ast.field list *)
           (* idea: for each field with name and type x_i t_i in S2,
                    check wether that type also exists in S1 *)
-          List.for_all (fun f2 -> 
+
+          (* width only: every field of id2 must appear in id1 with exactly the same type *)
+          List.for_all (fun f2 ->
+            match List.find_opt (fun f1 -> f1.fieldName = f2.fieldName) fields1 with
+            | None -> false
+            | Some f1 -> f1.ftyp = f2.ftyp
+          ) fields2
+          
+          (* List.for_all (fun f2 -> 
               List.exists ( fun f1 ->
                   f1.fieldName = f2.fieldName && 
                   subtype c f1.ftyp f2.ftyp
               ) fields1
-            ) fields2
+            ) fields2 *)
 
       | _ -> false)
   | RFun (arg_types1, ret_type1), RFun (arg_types2, ret_type2) ->
@@ -195,6 +203,14 @@ and typecheck_ret_ty (l : 'a Ast.node) (tc : Tctxt.t) (r : Ast.ret_ty) : unit =
   | Ast.RetVal t -> typecheck_ty l tc t
 
 (* typechecking expressions ------------------------------------------------- *)
+
+(* Helper function to look for duplicate field names *)
+let rec check_dups fs =
+  match fs with
+  | [] -> false
+  | h :: t -> (List.exists (fun x -> x.fieldName = h.fieldName) t) || check_dups t
+
+
 (* Typechecks an expression in the typing context c, returns the type of the
    expression.  This function should implement the inference rules given in the
    oat.pdf specification.  There, they are written:
@@ -307,6 +323,10 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
     | None -> type_error e ("Undefined struct type2: " ^ id)
     | Some fields ->
       (* check that all fields are initialized and types match - order does not matter *)
+      if check_dups fields then
+        type_error e ("Duplicate field initializers in struct " ^ id);
+      if check_dups (List.map (fun (fname, fexp) -> {fieldName = fname; ftyp = Ast.TInt}) field_inits) then
+        type_error e ("Duplicate field names in struct initializer for struct " ^ id);
       let field_types = List.fold_left (fun acc f -> (f.fieldName, f.ftyp)::acc) [] fields in
       List.iter (fun (fname, fexp) ->
         (match List.assoc_opt fname field_types with
@@ -425,6 +445,67 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
 
 (* statements --------------------------------------------------------------- *)
 
+let rec typecheck_lhs tc lhs =
+  match lhs.elt with
+  | Id id ->
+    (* Check that id is not a function identifier i.e. does not lie in 
+      the function namespace which is the global context *)
+    (* If it is a local variable of type function, than it is fine *)
+    
+    (* what happens to shadowed locals? *)
+    (match Tctxt.lookup_local_option id tc with
+    | Some ty -> (* everything is fine*)
+        typecheck_exp tc lhs
+    | None -> (* lookup in the function (global) space:*)
+      (match Tctxt.lookup_global_option id tc with
+      | Some ty -> 
+        (match ty with
+        | TRef (RFun _) -> type_error lhs ("Cannot assign to function type identifier " ^ id)
+        | _ -> ty
+        )
+      | None -> (* you are not a function identifier hence, assignment is valid*)
+          typecheck_exp tc lhs
+      )
+    )
+
+
+    (* (match Tctxt.lookup_global_option id tc with
+    | Some ty -> 
+      (match ty with
+      | TRef (RFun _) -> type_error lhs ("Cannot assign to function type identifier " ^ id)
+      | _ -> ty
+      )
+    | None -> (* Continue looking in the Global context*)
+        (match Tctxt.lookup_global_option id tc with
+        | Some ty -> 
+          (match ty with
+          | TRef (RFun _) -> type_error lhs ("Cannot assign to function type identifier " ^ id)
+          | _ -> ty
+          )
+        | None -> type_error lhs ("Undefined identifier: " ^ id)
+        )
+    ) *)
+  | Proj (struct_exp, field_name) ->
+    let struct_type = typecheck_exp tc struct_exp in
+    (match struct_type with
+    | TRef (RStruct id) ->
+      (match Tctxt.lookup_struct_option id tc with
+      | None -> type_error struct_exp ("Undefined struct type: " ^ id)
+      | Some fields ->
+        (match List.find_opt (fun f -> f.fieldName = field_name) fields with
+        | None -> type_error struct_exp ("Field " ^ field_name ^ " not found in struct " ^ id)
+        | Some field -> (* make sure assigning to non function: *)
+          (match field.ftyp with
+          | TRef (RFun _) -> type_error lhs ("Cannot assign to function type field " ^ field_name ^ " of struct " ^ id)
+          | _ -> field.ftyp
+          )
+        )
+      )
+    | _ -> type_error struct_exp ("Projection requires a non-null struct type, found " ^ (Astlib.string_of_ty struct_type))
+    )
+  
+  | _ -> typecheck_exp tc lhs
+
 (* Typecheck a statement 
    This function should implement the statement typechecking rules from oat.pdf.  
 
@@ -465,8 +546,10 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
                     update it's value to rhs if present
                 or: add rhs' value to local context if not present
     *)
-    let lhs_type = typecheck_exp tc lhs in
+    let lhs_type = typecheck_lhs tc lhs in
     let rhs_type = typecheck_exp tc rhs in
+    (* (if (lhs_type = (Ast.TRef (Ast.RFun _))) 
+      then type_error s ("Cannot assign to function type")) *)
     if subtype tc rhs_type lhs_type then
       (tc, false)
       (* add lhs to the context and return (new context, false)*)
@@ -488,7 +571,9 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     *)
     let (var_id, init_exp) = vdecl in
     let init_type = typecheck_exp tc init_exp in
-    (* Add variable to the context *)
+    (* Add variable to the context if not already present!! *)
+    if Tctxt.lookup_local_option var_id tc <> None then
+      type_error s ("Variable " ^ var_id ^ " already declared in local context");
     let new_tc = Tctxt.add_local tc var_id init_type in
     (new_tc, false)
 
@@ -621,13 +706,6 @@ and typecheck_block (tc: Tctxt.t) (blk: Ast.block) (to_ret: Ast.ret_ty) : Tctxt.
 (* Here is an example of how to implement the TYP_TDECLOK rule, which is 
    is needed elswhere in the type system.
  *)
-
-(* Helper function to look for duplicate field names *)
-let rec check_dups fs =
-  match fs with
-  | [] -> false
-  | h :: t -> (List.exists (fun x -> x.fieldName = h.fieldName) t) || check_dups t
-
 let typecheck_tdecl (tc : Tctxt.t) id fs  (l : 'a Ast.node) : unit =
   if check_dups fs
   then type_error l ("Repeated fields in " ^ id) 
@@ -862,7 +940,7 @@ let contains_global_identifiers (e:Ast.exp Ast.node) (tc:Tctxt.t) : bool =
   in
   aux e
 
-let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
+let create_global_ctxt (g_tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
   (* create_global_ctxt: - typechecks the global initializers and adds
    their identifiers to the 'G' global context
 
@@ -886,18 +964,21 @@ let create_global_ctxt (tc:Tctxt.t) (p:Ast.prog) : Tctxt.t =
         if Tctxt.lookup_global_option g.name tc <> None then
           type_error l ("Duplicate global identifier: " ^ g.name)
         else
-          let init_type = typecheck_exp tc g.init in
+          (* let init_type = typecheck_exp tc g.init in *)
+          let init_type = typecheck_exp g_tc g.init in
           (* typecheck_ty l tc init_type; *)
           (* check that gexp contains no global variables *)
-          (match contains_global_identifiers g.init tc with
+          let tc' = Tctxt.add_global tc g.name init_type in
+          add_globals tc' t
+          (* (match contains_global_identifiers g.init tc with
           | true -> type_error l ("Global initializer for " ^ g.name ^ " contains global identifiers")
           | false -> let tc' = Tctxt.add_global tc g.name init_type in
                       add_globals tc' t
-          )
+          ) *)
 
       | _ -> add_globals tc t) (* again, ignore f and t decls*)
   in
-  let glob_ctxt = add_globals tc p in
+  let glob_ctxt = add_globals g_tc p in
   add_builtins glob_ctxt
 
 
