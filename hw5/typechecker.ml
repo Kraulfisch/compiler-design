@@ -105,7 +105,7 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
   match (t1, t2) with
   | Ast.RString, Ast.RString -> true                            (* SUB_SUBSTRING *)
   | Ast.RArray arr_t1 , Ast. RArray arr_t2 -> arr_t1 = arr_t2   (* SUB_SUBARRAY *)
-  | RStruct id1, RStruct id2 -> (* struct_width [] id1 id2 *)
+  | RStruct id1, RStruct id2 ->
     if id1 = id2 then true
       (* The bigger struct is a subtype of the smaller one:
          makes sense when comparing to inheritance: when a smaller struct is
@@ -114,9 +114,9 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
       (* If the structs are not the same, follow the subtyping rule: SUB_SUBSTRUCT *)
       (* I.e. S1 <: S2 if S2 has fields t1 x1, ... ,tn xn and
                           S1 has fields t1 x1, ... , tn xn, plus possibly more *)
-      (* Break recursive struct: *)
-      false
-      (* (match (Tctxt.lookup_struct_option id1 c, Tctxt.lookup_struct_option id2 c) with
+      (* Break up recursive structs: *)
+      (* false *)
+      (match (Tctxt.lookup_struct_option id1 c, Tctxt.lookup_struct_option id2 c) with
       | (Some fields1, Some fields2) ->
           (* fields here are lists of Ast.id * Ast.field list *)
           (* idea: for each field with name and type x_i t_i in S2,
@@ -128,7 +128,7 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
               ) fields1
             ) fields2
 
-      | _ -> false) *)
+      | _ -> false)
   | RFun (arg_types1, ret_type1), RFun (arg_types2, ret_type2) ->
     let rec check_args args1 args2 =
       match (args1, args2) with
@@ -511,7 +511,109 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
                         " is not a subtype of expected return type " ^ (Astlib.string_of_ty t))
       )
     )
-  | _ -> failwith "todo others"
+  | SCall (fn_exp, arg_exps) ->
+    (* similar to expression function call, but we don't care about the return type *)
+    let fn_type = typecheck_exp tc fn_exp in
+    (match fn_type with
+    | TRef (RFun (param_types, RetVoid)) ->
+      if List.length param_types <> List.length arg_exps then
+        type_error fn_exp ("Function call argument count mismatch: expected " ^
+                           string_of_int (List.length param_types) ^
+                           ", found " ^ string_of_int (List.length arg_exps));
+      List.iter2 (fun param_type arg_exp ->
+        let arg_type = typecheck_exp tc arg_exp in
+        if not (subtype tc arg_type param_type) then
+          type_error arg_exp ("Function call argument type " ^ (Astlib.string_of_ty arg_type) ^
+                             " is not a subtype of parameter type " ^ (Astlib.string_of_ty param_type))
+      ) param_types arg_exps;
+      (tc, false)
+    | _ -> type_error fn_exp ("Function call requires a non-null function type, found " ^ (Astlib.string_of_ty fn_type))
+    )
+  | If (cond_exp, then_blk, else_blk) ->
+    let cond_type = typecheck_exp tc cond_exp in
+    if not (subtype tc cond_type Ast.TBool) then
+      type_error cond_exp ("Condition expression of if statement must be of type bool, found " ^ (Astlib.string_of_ty cond_type));
+    let (tc_after_then, does_return_then) = typecheck_block tc then_blk to_ret in
+    let (tc_after_else, does_return_else) = typecheck_block tc else_blk to_ret in
+    (* For an if to definitely return, both branches must definitely return *)
+    let does_return = does_return_then && does_return_else in
+    (tc, does_return)
+  | While (cond_exp, body_blk) ->
+    let cond_type = typecheck_exp tc cond_exp in
+    if not (subtype tc cond_type Ast.TBool) then
+      type_error cond_exp ("Condition expression of while statement must be of type bool, found " ^ (Astlib.string_of_ty cond_type));
+    let (_ , _ ) = typecheck_block tc body_blk to_ret in
+    (* Loops never definitely return *)
+    (tc, false)
+  | Cast (ref_ty, id, exp, stmt_node_list_1, stmt_node_list_2) ->
+    (* note that stmt_node_list :: smt node list *)
+    let exp_type = typecheck_exp tc exp in
+    (* check that exp_type is a reference type *)
+    (match exp_type with
+    | TRef r | TNullRef r ->
+      if not (subtype_ref tc r ref_ty) then
+        type_error exp ("Cast expression type " ^ (Astlib.string_of_ty exp_type) ^
+                        " is not a subtype of cast target type " ^ (Astlib.string_of_ty (TRef ref_ty)));
+    | _ -> type_error exp ("Cast expression must be of reference type, found " ^ (Astlib.string_of_ty exp_type))
+    );
+    let (tc_after_stmt1, does_return1) = typecheck_block tc stmt_node_list_1 to_ret in
+    let (tc_after_stmt2, does_return2) = typecheck_block tc stmt_node_list_2 to_ret in
+    let does_return = does_return1 && does_return2 in
+    (tc, does_return)
+
+  | For (vdecls, cond_exp_opt, update_stmt_opt, body_blk) ->
+    (* typecheck the for loop components *)
+    let tc_after_decls =
+      List.fold_left (fun acc_tc vdecl ->
+        let (var_id, init_exp) = vdecl in
+        let init_type = typecheck_exp acc_tc init_exp in
+        Tctxt.add_local acc_tc var_id init_type
+      ) tc vdecls
+    in
+    (match cond_exp_opt with
+    | Some cond_exp ->
+      let cond_type = typecheck_exp tc_after_decls cond_exp in
+      if not (subtype tc_after_decls cond_type Ast.TBool) then
+        type_error cond_exp ("Condition expression of for statement must be of type bool, found " ^ (Astlib.string_of_ty cond_type));
+    | None -> ()
+    );
+    (match update_stmt_opt with
+    | Some update_stmt ->
+      let (_ , _ ) = typecheck_stmt tc_after_decls update_stmt to_ret in
+      ()
+    | None -> ()
+    );
+    let (_ , _ ) = typecheck_block tc_after_decls body_blk to_ret in
+    (* Loops never definitely return *)
+    (tc, false)
+and typecheck_block (tc: Tctxt.t) (blk: Ast.block) (to_ret: Ast.ret_ty) : Tctxt.t * bool =
+  (* typecheck a block of statements
+      - extends the local context with any newly declared variables
+      - typechecks each statement in sequence
+      - tracks whether the block definitely returns or might not return
+  *)
+
+  let rec aux tc def_ret = function
+    | [] -> (tc, def_ret)
+    | s :: rest ->
+      if def_ret then
+        type_error s "Unreachable statement after definite return"
+      else
+        let (tc', s_ret) = typecheck_stmt tc s to_ret in
+        aux tc' (def_ret || s_ret) rest
+  in
+  aux tc false blk
+
+  (* match blk with
+  | [] -> (tc, false)  (* empty block might not return *)
+  | s :: rest ->
+    let (tc_after_s, does_return_s) = typecheck_stmt tc s to_ret in
+    if does_return_s then
+      (* if the first statement definitely returns, the whole block does *)
+      (tc_after_s, true)
+    else
+      (* else continue with the rest of the block *)
+      typecheck_block tc_after_s rest to_ret   *)
   
 
 
@@ -534,22 +636,6 @@ let typecheck_tdecl (tc : Tctxt.t) id fs  (l : 'a Ast.node) : unit =
 
   
 (* function declarations ---------------------------------------------------- *)
-let rec typecheck_block (tc: Tctxt.t) (blk: Ast.block) (to_ret: Ast.ret_ty) : Tctxt.t * bool =
-  (* typecheck a block of statements
-      - extends the local context with any newly declared variables
-      - typechecks each statement in sequence
-      - tracks whether the block definitely returns or might not return
-  *)
-  match blk with
-  | [] -> (tc, false)  (* empty block might not return *)
-  | s :: rest ->
-    let (tc_after_s, does_return_s) = typecheck_stmt tc s to_ret in
-    if does_return_s then
-      (* if the first statement definitely returns, the whole block does *)
-      (tc_after_s, true)
-    else
-      (* else continue with the rest of the block *)
-      typecheck_block tc_after_s rest to_ret  
 
 (* typecheck a function declaration 
     - extends the local context with the types of the formal parameters to the 
