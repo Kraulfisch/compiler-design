@@ -138,7 +138,11 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
 
       | _ -> false)
   | RFun (arg_types1, ret_type1), RFun (arg_types2, ret_type2) ->
-    let rec check_args args1 args2 =
+    List.length arg_types1 = List.length arg_types2
+      && List.for_all2 (fun p2 p1 -> subtype c p2 p1) arg_types2 arg_types1 (* arg contravariance *)
+      && subtype_ret c ret_type1 ret_type2
+      
+    (* let rec check_args args1 args2 =
       match (args1, args2) with
       | ([], []) -> true
       | (a1::t1, a2::t2) ->
@@ -148,7 +152,7 @@ and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
           false
       | _ -> false
     in
-    check_args arg_types1 arg_types2 && subtype_ret c ret_type1 ret_type2
+    check_args arg_types1 arg_types2 && subtype_ret c ret_type1 ret_type2 *)
       
   | _ -> false
 
@@ -630,21 +634,22 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     let (_ , _ ) = typecheck_block tc body_blk to_ret in
     (* Loops never definitely return *)
     (tc, false)
-  | Cast (ref_ty, id, exp, stmt_node_list_1, stmt_node_list_2) ->
-    (* note that stmt_node_list :: smt node list *)
-    let exp_type = typecheck_exp tc exp in
-    (* check that exp_type is a reference type *)
-    (match exp_type with
-    | TRef r | TNullRef r ->
-      if not (subtype_ref tc r ref_ty) then
-        type_error exp ("Cast expression type " ^ (Astlib.string_of_ty exp_type) ^
-                        " is not a subtype of cast target type " ^ (Astlib.string_of_ty (TRef ref_ty)));
-    | _ -> type_error exp ("Cast expression must be of reference type, found " ^ (Astlib.string_of_ty exp_type))
-    );
-    let (tc_after_stmt1, does_return1) = typecheck_block tc stmt_node_list_1 to_ret in
-    let (tc_after_stmt2, does_return2) = typecheck_block tc stmt_node_list_2 to_ret in
-    let does_return = does_return1 && does_return2 in
-    (tc, does_return)
+  | Cast (ref_ty, id, exp, notnull_blk, null_blk) ->
+    (* exp must have type TRef r or TNullRef r where r <: ref_ty (or same) *)
+    let exp_ty = typecheck_exp tc exp in
+    let ok =
+      match exp_ty with
+      | TRef r -> subtype_ref tc r ref_ty
+      | TNullRef r -> subtype_ref tc r ref_ty
+      | _ -> false
+    in
+    if not ok then
+      type_error exp ("Cast expression has incompatible type " ^ Astlib.string_of_ty exp_ty);
+    (* Not-null branch: id is bound to non-null reference *)
+    let tc_notnull = Tctxt.add_local tc id (TRef ref_ty) in
+    let (_, ret_notnull) = typecheck_block tc_notnull notnull_blk to_ret in
+    let (_, ret_null) = typecheck_block tc null_blk to_ret in
+    (tc, ret_notnull && ret_null)
 
   | For (vdecls, cond_exp_opt, update_stmt_opt, body_blk) ->
     (* typecheck the for loop components *)
