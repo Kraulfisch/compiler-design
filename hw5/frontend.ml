@@ -1,8 +1,7 @@
 (* Usage of AI:
   Keeping track: Keep an overview over the different modules and their interactions
   Debugging: reading through generated llvm code and explaining 
-
-
+  Finding logical mistakes related to structs
 *)
 
 open Ll
@@ -746,18 +745,23 @@ let rec cmp_gexp c (tc : TypeCtxt.t) (e:Ast.exp node) : Ll.gdecl * (Ll.gid * Ll.
     (Ptr final_t, cast), (gid, (arr_t, arr_i))::gs
 
   (* STRUCT TASK: Complete this code that generates the global initializers for a struct value. *)  
-  | CStruct (id, cs) ->
-    (* global structs are simply declared *)
-    let fields, gs = List.fold_right
-        (fun (field_name, field_exp) (fields, gs) ->
-           let gd, gs' = cmp_gexp c tc field_exp in
-           gd::fields, gs' @ gs) cs ([], []) in
+  (* STRUCT TASK: Complete this code that generates the global initializers for a struct value. *)  
+  | Ast.CStruct (id, cs) ->
+    let defined_fields = TypeCtxt.lookup id tc in    
+    let fields, gs = List.fold_right (fun field_def (acc_fields, acc_gs) ->
+        let (_, match_exp) = List.find (fun (n, _) -> n = field_def.fieldName) cs in
+        let gd, gs' = cmp_gexp c tc match_exp in
+        (gd :: acc_fields, gs' @ acc_gs)
+      ) defined_fields ([], []) 
+    in
+
     let gid = gensym "global_struct" in
-    let struct_fields = List.map (fun (t, _) -> t) fields in
-    let struct_t = Struct struct_fields in
+    let struct_type_list = List.map fst fields in
+    let struct_t = Struct struct_type_list in
     let struct_i = GStruct fields in
     let final_t = Ptr (Namedt id) in
     let cast = GBitcast (Ptr struct_t, GGid gid, final_t) in
+    
     (final_t, cast), (gid, (struct_t, struct_i))::gs
 
   | _ -> failwith "bad global initializer"
