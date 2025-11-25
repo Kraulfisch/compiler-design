@@ -62,81 +62,32 @@ let rec subtype (c : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
 
 (* Decides whether H |-r ref1 <: ref2 *)
 and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
-  (* Handle recursive structs: *)
-  (* let cache : (string * string, bool) Hashtbl.t = Hashtbl.create 17 in
-  let visiting : (string * string, unit) Hashtbl.t = Hashtbl.create 17 in
-  let rec go r1 r2 =
-    (match r1, r2 with
-    | RString, RString -> true
-    | RArray t1, RArray t2 -> t1 = t2
-    | RFun (a1, ret1), RFun (a2, ret2) ->
-        List.length a1 = List.length a2
-        && List.for_all2 (fun p2 p1 -> subtype c p2 p1) a2 a1
-        && subtype_ret c ret1 ret2
-    | RStruct s1, RStruct s2 ->
-        if s1 = s2 then true else
-        (* cycle handling *)
-        if Hashtbl.mem cache (s1,s2) then Hashtbl.find cache (s1,s2) else
-        if Hashtbl.mem visiting (s1,s2) then
-          false (* break cycle: treat as non-subtype *)
-        else begin
-          Hashtbl.add visiting (s1,s2) ();
-          let res =
-            match Tctxt.lookup_struct_option s1 c, Tctxt.lookup_struct_option s2 c with
-            | Some fs1, Some fs2 ->
-                (* width + depth: every field of s2 must exist in s1 with compatible type *)
-                List.for_all (fun f2 ->
-                  match List.find_opt (fun f1 -> f1.fieldName = f2.fieldName) fs1 with
-                  | None -> false
-                  | Some f1 ->
-                      (* depth: recurse on field types *)
-                      subtype c f1.ftyp f2.ftyp
-                ) fs2
-            | _ -> false
-          in
-          Hashtbl.remove visiting (s1,s2);
-          Hashtbl.add cache (s1,s2) res;
-          res
-        end
-    | _ -> false
-    )
-  in
-  go t1 t2 *)
+
   match (t1, t2) with
   | Ast.RString, Ast.RString -> true                            (* SUB_SUBSTRING *)
   | Ast.RArray arr_t1 , Ast. RArray arr_t2 -> arr_t1 = arr_t2   (* SUB_SUBARRAY *)
   | RStruct id1, RStruct id2 ->
     if id1 = id2 then true
-      (* The bigger struct is a subtype of the smaller one:
-         makes sense when comparing to inheritance: when a smaller struct is
-         expected, the larger one will also suffice *)
-    else  
-      (* If the structs are not the same, follow the subtyping rule: SUB_SUBSTRUCT *)
-      (* I.e. S1 <: S2 if S2 has fields t1 x1, ... ,tn xn and
-                          S1 has fields t1 x1, ... , tn xn, plus possibly more *)
-      (* Break up recursive structs: *)
-      (* false *)
+    else
       (match (Tctxt.lookup_struct_option id1 c, Tctxt.lookup_struct_option id2 c) with
-      | (Some fields1, Some fields2) ->
-          (* fields here are lists of Ast.id * Ast.field list *)
-          (* idea: for each field with name and type x_i t_i in S2,
-                   check wether that type also exists in S1 *)
-
-          (* width only: every field of id2 must appear in id1 with exactly the same type *)
-          List.for_all (fun f2 ->
-            match List.find_opt (fun f1 -> f1.fieldName = f2.fieldName) fields1 with
-            | None -> false
-            | Some f1 -> f1.ftyp = f2.ftyp
-          ) fields2
-          
-          (* List.for_all (fun f2 -> 
-              List.exists ( fun f1 ->
-                  f1.fieldName = f2.fieldName && 
-                  subtype c f1.ftyp f2.ftyp
-              ) fields1
-            ) fields2 *)
-
-      | _ -> false)
+       | (Some fields1, Some fields2) ->
+           (* Helper function to check if fields2 is a prefix of fields1 *)
+           let rec is_prefix sub_fs super_fs =
+             match sub_fs, super_fs with
+             (* 1. Supertype ran out of fields: Success! (Subtype can have extra fields) *)
+             | _, [] -> true
+             (* 2. Subtype ran out but Supertype still needs more: Fail *)
+             | [], _ :: _ -> false
+             (* 3. Compare the current fields *)
+             | (f1 :: t1), (f2 :: t2) ->
+                 if f1.fieldName = f2.fieldName && f1.ftyp = f2.ftyp then
+                   is_prefix t1 t2
+                 else
+                   false
+           in
+           is_prefix fields1 fields2
+       | _ -> false)
+  
   | RFun (arg_types1, ret_type1), RFun (arg_types2, ret_type2) ->
     List.length arg_types1 = List.length arg_types2
       && List.for_all2 (fun p2 p1 -> subtype c p2 p1) arg_types2 arg_types1 (* arg contravariance *)
@@ -283,6 +234,8 @@ let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
     if not (subtype c size_type Ast.TInt) then
       type_error size_exp ("Array size expression must be of type int, found " ^ (Astlib.string_of_ty size_type));
     (* Index variable always hase type Int: *)
+    if Tctxt.lookup_local_option id c <> None then
+      type_error e ("Index variable " ^ id ^ " already declared in local context"); (*added id check*)
     let c_with_id = Tctxt.add_local c id Ast.TInt in
     let init_type = typecheck_exp c_with_id init_exp in
     if not (subtype c init_type ty) then
@@ -671,7 +624,7 @@ let rec typecheck_stmt (tc : Tctxt.t) (s:Ast.stmt node) (to_ret:ret_ty) : Tctxt.
     (match update_stmt_opt with
     | Some update_stmt ->
       let (_ , ret ) = typecheck_stmt tc_after_decls update_stmt to_ret in
-      if ret then type_error update_stmt "For Condition does return"
+      if ret then type_error update_stmt "For Condition does return" (*added return check*)
     | None -> ()
     );
     let (_ , _ ) = typecheck_block tc_after_decls body_blk to_ret in
