@@ -1,0 +1,15 @@
+(executable
+ (name main)
+ (libraries unix str num))
+
+
+(menhir
+  (modules parser))
+
+
+(env
+ (dev
+  (flags
+   (:standard -warn-error -A -no-strict-formats))))
+
+(include_subdirs unqualified)

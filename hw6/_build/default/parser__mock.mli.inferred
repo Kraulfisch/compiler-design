@@ -1,0 +1,111 @@
+type token =
+    WHILE
+  | VAR
+  | UIDENT of string
+  | TVOID
+  | TSTRING
+  | TRUE
+  | TINT
+  | TILDE
+  | TBOOL
+  | STRUCT
+  | STRING of string
+  | STAR
+  | SEMI
+  | RPAREN
+  | RETURN
+  | RBRACKET
+  | RBRACE
+  | QUESTION
+  | PLUS
+  | NULL
+  | NEW
+  | LTLT
+  | LTEQ
+  | LT
+  | LPAREN
+  | LENGTH
+  | LBRACKET
+  | LBRACE
+  | IOR
+  | INT of int64
+  | IFQ
+  | IF
+  | IDENT of string
+  | IAND
+  | GTGTGT
+  | GTGT
+  | GTEQ
+  | GT
+  | GLOBAL
+  | FOR
+  | FALSE
+  | EQEQ
+  | EQ
+  | EOF
+  | ELSE
+  | DOT
+  | DASH
+  | COMMA
+  | BAR
+  | BANGEQ
+  | BANG
+  | ARROW
+  | AMPER
+val loc : Lexing.position -> Lexing.position -> 'a -> 'a Ast.node
+val menhir_begin_marker : int
+val xv_vdecl : Ast.vdecl
+val xv_uop : Ast.unop
+val xv_ty : Ast.ty
+val xv_stmt_top : Ast.stmt Ast.node
+val xv_stmt : Ast.stmt Ast.node
+val xv_separated_nonempty_list_SEMI_gfield_ :
+  (string * Ast.exp Ast.node) list
+val xv_separated_nonempty_list_SEMI_field_ : (string * Ast.exp Ast.node) list
+val xv_separated_nonempty_list_SEMI_decl_field_ : Ast.field list
+val xv_separated_nonempty_list_COMMA_vdecl_ : Ast.vdecl list
+val xv_separated_nonempty_list_COMMA_ty_ : Ast.ty list
+val xv_separated_nonempty_list_COMMA_pair_ty_IDENT__ : (Ast.ty * string) list
+val xv_separated_nonempty_list_COMMA_gexp_ : Ast.exp Ast.node list
+val xv_separated_nonempty_list_COMMA_exp_ : Ast.exp Ast.node list
+val xv_separated_list_SEMI_gfield_ : (string * Ast.exp Ast.node) list
+val xv_separated_list_SEMI_field_ : (string * Ast.exp Ast.node) list
+val xv_separated_list_SEMI_decl_field_ : Ast.field list
+val xv_separated_list_COMMA_vdecl_ : Ast.vdecl list
+val xv_separated_list_COMMA_ty_ : Ast.ty list
+val xv_separated_list_COMMA_pair_ty_IDENT__ : (Ast.ty * string) list
+val xv_separated_list_COMMA_gexp_ : Ast.exp Ast.node list
+val xv_separated_list_COMMA_exp_ : Ast.exp Ast.node list
+val xv_rtyp : Ast.rty
+val xv_ret_ty : Ast.ret_ty
+val xv_prog : Ast.prog
+val xv_pair_ty_IDENT_ : Ast.ty * string
+val xv_option_stmt_ : Ast.stmt Ast.node option
+val xv_option_exp_ : Ast.exp Ast.node option
+val xv_loption_separated_nonempty_list_SEMI_gfield__ :
+  (string * Ast.exp Ast.node) list
+val xv_loption_separated_nonempty_list_SEMI_field__ :
+  (string * Ast.exp Ast.node) list
+val xv_loption_separated_nonempty_list_SEMI_decl_field__ : Ast.field list
+val xv_loption_separated_nonempty_list_COMMA_vdecl__ : Ast.vdecl list
+val xv_loption_separated_nonempty_list_COMMA_ty__ : Ast.ty list
+val xv_loption_separated_nonempty_list_COMMA_pair_ty_IDENT___ :
+  (Ast.ty * string) list
+val xv_loption_separated_nonempty_list_COMMA_gexp__ : Ast.exp Ast.node list
+val xv_loption_separated_nonempty_list_COMMA_exp__ : Ast.exp Ast.node list
+val xv_list_stmt_ : Ast.block
+val xv_list_decl_ : Ast.prog
+val xv_lhs : Ast.exp Ast.node
+val xv_if_stmt : Ast.stmt Ast.node
+val xv_gfield : string * Ast.exp Ast.node
+val xv_gexp : Ast.exp Ast.node
+val xv_field : string * Ast.exp Ast.node
+val xv_exp_top : Ast.exp Ast.node
+val xv_exp : Ast.exp Ast.node
+val xv_else_stmt : Ast.block
+val xv_decl_field : Ast.field
+val xv_decl : Ast.decl
+val xv_bop : Ast.binop
+val xv_block : Ast.block
+val xv_arglist : (Ast.ty * string) list
+val menhir_end_marker : int
