@@ -740,7 +740,279 @@ let greedy_layout (f:Ll.fdecl) (live:liveness) : layout =
 *)
 
 let better_layout (f:Ll.fdecl) (live:liveness) : layout =
-  failwith "Backend.better_layout not implemented"
+(* TODO: Start thinking about this problem. This will take some time.... *)
+  let n_arg = ref 0 in
+  let n_spill = ref 0 in
+  let spill () = (incr n_spill; Alloc.LStk (- !n_spill)) in
+
+  (* Track parameter allocations *)
+  let param_allocs : (uid * Alloc.loc) list ref = ref [] in
+
+  (* Pre-colored helper function for register paramters *)
+  let get_precolored uid : Alloc.loc option =
+    try Some (List.assoc uid !param_allocs)
+    with Not_found -> None
+  in
+
+  (* Allocate argument locations, spilling Rcx as in greedy *)
+  let alloc_arg uid =
+    let res =
+      match arg_loc !n_arg with
+      | Alloc.LReg Rcx -> spill ()
+      | x -> x
+    in
+    incr n_arg;
+    param_allocs := (uid, res) :: !param_allocs;
+    res
+  in
+
+  (* Available registers: caller-save minus Rax and Rcx *)
+  let pal = LocSet.(caller_save 
+                    |> remove (Alloc.LReg Rax)
+                    |> remove (Alloc.LReg Rcx))
+  in
+  let print_pal pal = 
+    LocSet.iter (fun l -> Platform.verb @@ Printf.sprintf "pal: %s\n" (Alloc.str_loc l)) pal
+  in
+  print_pal pal;
+  let num_colors = LocSet.cardinal pal in
+
+  (* First pass: allocate parameters and collect their locations *)
+  let _ = List.iter (fun (x, _) -> ignore (alloc_arg x)) 
+            (List.combine f.f_param (fst f.f_ty)) in
+
+  (* Collect all UIDs that need allocation (excluding parameters) *)
+  let param_set = List.fold_left (fun s (x, _) -> UidSet.add x s) 
+                    UidSet.empty (List.combine f.f_param (fst f.f_ty)) in
+  
+  let all_uids : UidSet.t =
+    fold_fdecl
+      (fun s (x, _) -> s)  (* Skip params, handled separately *)
+      (fun s _ -> s)
+      (fun s (x, i) -> if insn_assigns i then UidSet.add x s else s)
+      (fun s _ -> s)
+      UidSet.empty f
+  in
+
+  (* Build interference graph: uid -> set of interfering uids *)
+  let interference : UidSet.t Datastructures.UidM.t =
+    let add_edge g u v =
+      if u = v then g
+      else
+        let u_neighbors = try Datastructures.UidM.find u g with Not_found -> UidSet.empty in
+        let v_neighbors = try Datastructures.UidM.find v g with Not_found -> UidSet.empty in
+        g |> Datastructures.UidM.add u (UidSet.add v u_neighbors)
+          |> Datastructures.UidM.add v (UidSet.add u v_neighbors)
+    in
+    (* For each program point, all live-in variables interfere with each other *)
+    let add_interferences g uid =
+      let live_set = try live.live_in uid with Not_found -> UidSet.empty in
+      UidSet.fold (fun u acc ->
+        UidSet.fold (fun v acc' -> add_edge acc' u v) live_set acc
+      ) live_set g
+    in
+    fold_fdecl
+      (fun g (x, _) -> add_interferences g x)
+      (fun g l -> add_interferences g l)
+      (fun g (x, _) -> add_interferences g x)
+      (fun g (x, _) -> add_interferences g x)
+      Datastructures.UidM.empty f
+  in
+
+  let get_neighbors uid =
+    try Datastructures.UidM.find uid interference with Not_found -> UidSet.empty
+  in
+
+  let degree uid = UidSet.cardinal (get_neighbors uid) in
+
+  (* Count uses of each UID for spill heuristic *)
+  let use_counts : int Datastructures.UidM.t =
+    let count_operand counts op =
+      match op with
+      | Ll.Id uid -> 
+          let c = try Datastructures.UidM.find uid counts with Not_found -> 0 in
+          Datastructures.UidM.add uid (c + 1) counts
+      | _ -> counts
+    in
+    let count_operands counts ops = List.fold_left count_operand counts ops in
+    let count_insn counts (_, insn) =
+      match insn with
+      | Ll.Binop (_, _, o1, o2) -> count_operands counts [o1; o2]
+      | Ll.Load (_, o) -> count_operand counts o
+      | Ll.Store (_, o1, o2) -> count_operands counts [o1; o2]
+      | Ll.Icmp (_, _, o1, o2) -> count_operands counts [o1; o2]
+      | Ll.Call (_, o, args) -> 
+          count_operands counts (o :: List.map snd args)
+      | Ll.Bitcast (_, o, _) -> count_operand counts o
+      | Ll.Gep (_, o, os) -> count_operands counts (o :: os)
+      | Ll.Alloca _ -> counts
+    in
+    let count_term counts (_, term) =
+      match term with
+      | Ll.Ret (_, Some o) -> count_operand counts o
+      | Ll.Cbr (o, _, _) -> count_operand counts o
+      | _ -> counts
+    in
+    fold_fdecl
+      (fun c _ -> c)
+      (fun c _ -> c)
+      count_insn
+      count_term
+      Datastructures.UidM.empty f
+  in
+
+  let get_use_count uid =
+    try Datastructures.UidM.find uid use_counts with Not_found -> 0
+  in
+  (* Identify UIDs that are live across a Call instruction *)
+  let live_across_call : UidSet.t =
+    fold_fdecl
+      (fun acc _ -> acc)
+      (fun acc _ -> acc)
+      (fun acc (uid, insn) ->
+        match insn with
+        | Ll.Call _ ->
+            (* All UIDs live-in at this call are "live across call" *)
+            let live_here = try live.live_in uid with Not_found -> UidSet.empty in
+            UidSet.union acc live_here
+        | _ -> acc)
+      (fun acc _ -> acc)
+      UidSet.empty f
+  in
+
+  (*spill cost heuristic: lower is prefered spill
+   PREFER to spill variables live across calls *)
+  let spill_cost uid =
+    let uses = get_use_count uid in
+    let deg = degree uid in
+    (* Variables live across calls should have LOW spill cost (we WANT to spill them) *)
+    let across_call_bonus = 
+      if UidSet.mem uid live_across_call then -10000 else 0
+    in
+    if deg = 0 then max_int
+    else ((uses * 100) / (deg + 1)) + across_call_bonus
+  in
+
+  (* Compute effective degree: count neighbors that are either:
+     - in the current graph (non-parameters still being processed), OR
+     - pre-colored (parameters with fixed registers) *)
+  let effective_degree graph uid =
+    let neighbors = try Datastructures.UidM.find uid graph with Not_found -> UidSet.empty in
+    let graph_degree = UidSet.cardinal neighbors in
+    (* Also count pre-colored neighbors not in the graph *)
+    let all_neighbors = get_neighbors uid in
+    let precolored_neighbors = UidSet.filter (fun n -> 
+      get_precolored n <> None && not (UidSet.mem n neighbors)
+    ) all_neighbors in
+    graph_degree + UidSet.cardinal precolored_neighbors
+  in
+
+  (* Simplify: iteratively remove nodes with degree < k *)
+  let rec simplify (worklist : UidSet.t) (graph : UidSet.t Datastructures.UidM.t) 
+                   (stack : uid list) (spilled : UidSet.t) 
+      : uid list * UidSet.t =
+    if UidSet.is_empty worklist then
+      (stack, spilled)
+    else
+      (* Find a node with effective degree < num_colors *)
+      let low_degree_node =
+        UidSet.fold (fun uid acc ->
+          match acc with
+          | Some _ -> acc
+          | None ->
+              let current_degree = effective_degree graph uid in
+              if current_degree < num_colors then Some uid else None
+        ) worklist None
+      in
+      match low_degree_node with
+      | Some uid ->
+          (* Remove this node from the graph *)
+          let neighbors = try Datastructures.UidM.find uid graph with Not_found -> UidSet.empty in
+          let graph' = 
+            UidSet.fold (fun neighbor g ->
+              let n_neighbors = try Datastructures.UidM.find neighbor g with Not_found -> UidSet.empty in
+              Datastructures.UidM.add neighbor (UidSet.remove uid n_neighbors) g
+            ) neighbors (Datastructures.UidM.remove uid graph)
+          in
+          let worklist' = UidSet.remove uid worklist in
+          simplify worklist' graph' (uid :: stack) spilled
+      | None ->
+          (* No low-degree node found, must spill *)
+          (* Pick node with lowest spill cost *)
+          let spill_node =
+            UidSet.fold (fun uid (best, best_cost) ->
+              let cost = spill_cost uid in
+              if cost < best_cost then (uid, cost) else (best, best_cost)
+            ) worklist ("", max_int) |> fst
+          in
+          let neighbors = try Datastructures.UidM.find spill_node graph with Not_found -> UidSet.empty in
+          let graph' =
+            UidSet.fold (fun neighbor g ->
+              let n_neighbors = try Datastructures.UidM.find neighbor g with Not_found -> UidSet.empty in
+              Datastructures.UidM.add neighbor (UidSet.remove spill_node n_neighbors) g
+            ) neighbors (Datastructures.UidM.remove spill_node graph)
+          in
+          let worklist' = UidSet.remove spill_node worklist in
+          simplify worklist' graph' stack (UidSet.add spill_node spilled)
+  in
+
+  (* Select: assign colors by popping from stack *)
+  (* Must consider both neighbors' colors AND parameter allocations for interfering params *)
+  let select (stack : uid list) (spilled : UidSet.t) : (uid * Alloc.loc) list =
+    List.fold_left (fun coloring uid ->
+      if UidSet.mem uid spilled then
+        (uid, spill ()) :: coloring
+      else
+        let neighbors = get_neighbors uid in
+        (* Get colors used by already-colored neighbors AND pre-colored (parameter) neighbors *)
+        let neighbor_colors =
+          UidSet.fold (fun neighbor acc ->
+            (* First check if neighbor is pre-colored (a parameter) *)
+            match get_precolored neighbor with
+            | Some loc -> LocSet.add loc acc
+            | None ->
+                (* Otherwise check if neighbor is already colored in this pass *)
+                (try
+                  let loc = List.assoc neighbor coloring in
+                  LocSet.add loc acc
+                with Not_found -> acc)
+          ) neighbors LocSet.empty
+        in
+        let available = LocSet.diff pal neighbor_colors in
+        let color =
+          if LocSet.is_empty available then spill ()
+          else LocSet.choose available
+        in
+        (uid, color) :: coloring
+    ) [] stack
+  in
+
+
+  (* Run the algorithm *)
+  let stack, spilled = simplify all_uids interference [] UidSet.empty in
+  let coloring = select stack spilled in
+
+  (* Build the final layout, including parameters and labels *)
+  let lo =
+    fold_fdecl
+      (fun lo (x, _) -> 
+        (* Parameters already allocated, retrieve from param_allocs *)
+        let loc = List.assoc x !param_allocs in
+        (x, loc) :: lo)
+      (fun lo l -> (l, Alloc.LLbl (Platform.mangle l)) :: lo)
+      (fun lo (x, i) ->
+        if insn_assigns i then
+          let color = try List.assoc x coloring with Not_found -> spill () in
+          (x, color) :: lo
+        else
+          (x, Alloc.LVoid) :: lo)
+      (fun lo _ -> lo)
+      [] f
+  in
+
+  { uid_loc = (fun x -> List.assoc x lo)
+  ; spill_bytes = 8 * !n_spill
+  }
 
 
 
